@@ -28,7 +28,7 @@ jobs:
         uses: astral-sh/setup-uv@v1
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Install test dependencies
         run: uv pip install pytest pytest-asyncio
