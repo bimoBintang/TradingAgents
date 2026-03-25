@@ -30,6 +30,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync
 
+      - name: Install test dependencies
+        run: uv pip install pytest pytest-asyncio
+
       - name: Run Orchestrator Tests
         run: uv run pytest orchestrator/tests/ -v
 
