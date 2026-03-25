@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/banner.png" alt="CMAOP Banner" width="100%">
+</div>
+
 # TradingAgents (CMAOP) 🚀
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
