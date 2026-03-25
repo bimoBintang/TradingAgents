@@ -2,27 +2,45 @@
 
 Uses BM25 (Best Matching 25) algorithm for retrieval - no API calls,
 no token limits, works offline with any LLM provider.
+
+Phase 5: Added optional SQLite persistence via Database.
+Memories survive process restarts and accumulate across sessions.
 """
 
 from rank_bm25 import BM25Okapi
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import re
 
 
 class FinancialSituationMemory:
-    """Memory system for storing and retrieving financial situations using BM25."""
+    """Memory system for storing and retrieving financial situations using BM25.
 
-    def __init__(self, name: str, config: dict = None):
+    With optional database persistence:
+    - save_to_db() persists all (situation, advice) pairs
+    - load_from_db() restores pairs and rebuilds BM25 index
+    - add_situations() auto-persists if database is connected
+    """
+
+    def __init__(self, name: str, config: dict = None, full_config: dict = None, database=None):
         """Initialize the memory system.
 
         Args:
-            name: Name identifier for this memory instance
-            config: Configuration dict (kept for API compatibility, not used for BM25)
+            name: Name identifier for this memory instance (e.g., "bull", "bear")
+            config: Configuration dict (used for max_memory_items_per_agent)
+            full_config: Full application config dict (kept for API compatibility)
+            database: Optional Database instance for persistence
         """
         self.name = name
+        self.config = config or {}
+        self.full_config = full_config or {}
+        self.db = database
         self.documents: List[str] = []
         self.recommendations: List[str] = []
         self.bm25 = None
+
+        # Auto-load from DB if connected
+        if self.db:
+            self.load_from_db()
 
     def _tokenize(self, text: str) -> List[str]:
         """Tokenize text for BM25 indexing.
@@ -53,6 +71,10 @@ class FinancialSituationMemory:
 
         # Rebuild BM25 index with new documents
         self._rebuild_index()
+
+        # Auto-persist if database is connected
+        if self.db:
+            self.save_to_db()
 
     def get_memories(self, current_situation: str, n_matches: int = 1) -> List[dict]:
         """Find matching recommendations using BM25 similarity.
@@ -96,6 +118,48 @@ class FinancialSituationMemory:
         self.documents = []
         self.recommendations = []
         self.bm25 = None
+
+    # ── Database Persistence (Phase 5) ────────────────────────────────
+
+    def save_to_db(self) -> None:
+        """Persist all (situation, advice) pairs to SQLite.
+
+        Uses agent_name = self.name. Clears existing entries for this agent
+        before re-saving to avoid duplicates while keeping it simple.
+        """
+        if not self.db:
+            return
+
+        try:
+            pairs = list(zip(self.documents, self.recommendations))
+            if pairs:
+                self.db.save_memories(
+                    agent_name=self.name,
+                    pairs=pairs,
+                )
+        except Exception as e:
+            print(f"[Memory] save_to_db failed for {self.name}: {e}")
+
+    def load_from_db(self) -> None:
+        """Load (situation, advice) pairs from SQLite and rebuild BM25.
+
+        Respects max_memory_items_per_agent config limit (default 500).
+        """
+        if not self.db:
+            return
+
+        try:
+            limit = self.config.get("max_memory_items_per_agent", 500)
+            pairs = self.db.load_memories(agent_name=self.name, limit=limit)
+
+            if pairs:
+                self.documents = [sit for sit, _ in pairs]
+                self.recommendations = [adv for _, adv in pairs]
+                self._rebuild_index()
+                print(f"[Memory] Loaded {len(pairs)} memories for {self.name}")
+
+        except Exception as e:
+            print(f"[Memory] load_from_db failed for {self.name}: {e}")
 
 
 if __name__ == "__main__":

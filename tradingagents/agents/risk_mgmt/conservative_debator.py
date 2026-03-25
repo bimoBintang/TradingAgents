@@ -1,6 +1,9 @@
 from langchain_core.messages import AIMessage
 import time
 import json
+from tradingagents.agents.utils.prompt_blocks import (
+    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, STRICT_SYSTEM_PREAMBLE_NO_TOOLS,
+)
 
 
 def create_conservative_debator(llm):
@@ -19,9 +22,15 @@ def create_conservative_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = f"""As the Conservative Risk Analyst, your primary objective is to protect assets, minimize volatility, and ensure steady, reliable growth. You prioritize stability, security, and risk mitigation, carefully assessing potential losses, economic downturns, and market volatility. When evaluating the trader's decision or plan, critically examine high-risk elements, pointing out where the decision may expose the firm to undue risk and where more cautious alternatives could secure long-term gains. Here is the trader's decision:
+        prompt = f"""{STRICT_SYSTEM_PREAMBLE_NO_TOOLS}
+
+As the Conservative Risk Analyst, your primary objective is to protect assets, minimize volatility, and ensure steady, reliable growth. You prioritize stability, security, and risk mitigation, carefully assessing potential losses, economic downturns, and market volatility. When evaluating the trader's decision or plan, critically examine high-risk elements, pointing out where the decision may expose the firm to undue risk and where more cautious alternatives could secure long-term gains. Here is the trader's decision:
 
 {trader_decision}
+
+{ANTI_HALLUCINATION}
+
+{ANTI_CONFIRMATION_BIAS}
 
 Your task is to actively counter the arguments of the Aggressive and Neutral Analysts, highlighting where their views may overlook potential threats or fail to prioritize sustainability. Respond directly to their points, drawing from the following data sources to build a convincing case for a low-risk approach adjustment to the trader's decision:
 

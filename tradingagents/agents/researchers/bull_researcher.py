@@ -1,6 +1,9 @@
 from langchain_core.messages import AIMessage
 import time
 import json
+from tradingagents.agents.utils.prompt_blocks import (
+    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, STRICT_SYSTEM_PREAMBLE_NO_TOOLS,
+)
 
 
 def create_bull_researcher(llm, memory):
@@ -22,7 +25,9 @@ def create_bull_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
+        prompt = f"""{STRICT_SYSTEM_PREAMBLE_NO_TOOLS}
+
+You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
 
 Key points to focus on:
 - Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
@@ -30,6 +35,10 @@ Key points to focus on:
 - Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
 - Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
 - Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
+
+{ANTI_HALLUCINATION}
+
+{ANTI_CONFIRMATION_BIAS}
 
 Resources available:
 Market research report: {market_research_report}

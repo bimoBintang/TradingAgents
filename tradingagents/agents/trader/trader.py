@@ -1,6 +1,52 @@
 import functools
-import time
 import json
+from tradingagents.agents.utils.prompt_blocks import (
+    ANTI_HALLUCINATION, SELF_CHALLENGE, CONFIDENCE_SCORING,
+)
+
+
+TRADER_SYSTEM_PROMPT = """You are a trading agent analyzing market data to make investment decisions. You receive comprehensive analysis from a team of analysts and must make a specific trading recommendation.
+
+{portfolio_context}
+
+You MUST end your response with a structured JSON block wrapped in <TRADE_DECISION> tags:
+
+<TRADE_DECISION>
+{{
+    "action": "BUY" | "SELL" | "HOLD" | "STRONG_BUY" | "STRONG_SELL",
+    "confidence_score": <float 0.0 to 1.0>,
+    "quantity_pct": <float 0.0 to 1.0 — percentage of portfolio to allocate>,
+    "order_type": "MARKET" | "LIMIT",
+    "stop_loss_pct": <float or null — e.g. 0.05 for 5%>,
+    "take_profit_pct": <float or null — e.g. 0.10 for 10%>,
+    "reasoning": "<concise reasoning>",
+    "key_factors": ["<factor1>", "<factor2>", "<factor3>"],
+    "risk_reward_ratio": <float or null>,
+    "time_horizon": "intraday" | "short_term" | "medium_term" | "long_term"
+}}
+</TRADE_DECISION>
+
+Guidelines for position sizing:
+- STRONG_BUY: 0.15 to 0.25 of portfolio
+- BUY: 0.05 to 0.15 of portfolio
+- HOLD: 0.0 (no new position)
+- SELL: close existing position or 0.0 if no position
+- STRONG_SELL: close all existing positions for this ticker
+
+Always set stop_loss_pct (e.g. 0.03-0.08) and take_profit_pct for actionable trades. Ensure risk_reward_ratio > 1.5 for good trade quality.
+
+Consider the current portfolio state when making decisions. If you already have a large position, consider that in your sizing. Do not over-allocate.
+
+Utilize lessons from past decisions to learn from mistakes:
+{past_memories}
+
+IMPORTANT: Always end with the <TRADE_DECISION> JSON block. The JSON must be valid.
+
+""" + ANTI_HALLUCINATION + """
+
+""" + SELF_CHALLENGE + """
+
+""" + CONFIDENCE_SCORING
 
 
 def create_trader(llm, memory):
@@ -22,16 +68,33 @@ def create_trader(llm, memory):
         else:
             past_memory_str = "No past memories found."
 
+        # Build portfolio context string
+        portfolio_context = ""
+        portfolio_state = state.get("portfolio_state")
+        if portfolio_state:
+            portfolio_context = portfolio_state
+        else:
+            portfolio_context = "No portfolio information available. Assume default $10,000 paper portfolio."
+
+        system_prompt = TRADER_SYSTEM_PROMPT.format(
+            past_memories=past_memory_str,
+            portfolio_context=portfolio_context,
+        )
+
         context = {
             "role": "user",
-            "content": f"Based on a comprehensive analysis by a team of analysts, here is an investment plan tailored for {company_name}. This plan incorporates insights from current technical market trends, macroeconomic indicators, and social media sentiment. Use this plan as a foundation for evaluating your next trading decision.\n\nProposed Investment Plan: {investment_plan}\n\nLeverage these insights to make an informed and strategic decision.",
+            "content": (
+                f"Based on a comprehensive analysis by a team of analysts, here is an investment plan "
+                f"tailored for {company_name}. This plan incorporates insights from current technical "
+                f"market trends, macroeconomic indicators, and social media sentiment.\n\n"
+                f"Proposed Investment Plan: {investment_plan}\n\n"
+                f"Leverage these insights to make an informed and strategic decision. "
+                f"Remember to include the <TRADE_DECISION> JSON block at the end."
+            ),
         }
 
         messages = [
-            {
-                "role": "system",
-                "content": f"""You are a trading agent analyzing market data to make investment decisions. Based on your analysis, provide a specific recommendation to buy, sell, or hold. End with a firm decision and always conclude your response with 'FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL**' to confirm your recommendation. Do not forget to utilize lessons from past decisions to learn from your mistakes. Here is some reflections from similar situatiosn you traded in and the lessons learned: {past_memory_str}""",
-            },
+            {"role": "system", "content": system_prompt},
             context,
         ]
 

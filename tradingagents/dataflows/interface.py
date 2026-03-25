@@ -23,6 +23,28 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .messari import (
+    get_stock as get_messari_stock,
+    get_fundamentals as get_messari_fundamentals,
+    get_balance_sheet as get_messari_balance_sheet,
+    get_cashflow as get_messari_cashflow,
+    get_income_statement as get_messari_income_statement,
+    get_insider_transactions as get_messari_insider_transactions,
+    get_news as get_messari_news,
+    get_global_news as get_messari_global_news,
+)
+from .messari_common import MessariRateLimitError
+from .coingecko import (
+    get_stock as get_coingecko_stock,
+    get_fundamentals as get_coingecko_fundamentals,
+    get_balance_sheet as get_coingecko_balance_sheet,
+    get_cashflow as get_coingecko_cashflow,
+    get_income_statement as get_coingecko_income_statement,
+    get_insider_transactions as get_coingecko_insider_transactions,
+    get_news as get_coingecko_news,
+    get_global_news as get_coingecko_global_news,
+)
+from .coingecko_common import CoinGeckoRateLimitError
 
 # Configuration and routing logic
 from .config import get_config
@@ -63,6 +85,8 @@ TOOLS_CATEGORIES = {
 VENDOR_LIST = [
     "yfinance",
     "alpha_vantage",
+    "messari",
+    "coingecko",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -71,6 +95,8 @@ VENDOR_METHODS = {
     "get_stock_data": {
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
+        "messari": get_messari_stock,
+        "coingecko": get_coingecko_stock,
     },
     # technical_indicators
     "get_indicators": {
@@ -81,31 +107,45 @@ VENDOR_METHODS = {
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
+        "messari": get_messari_fundamentals,
+        "coingecko": get_coingecko_fundamentals,
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
+        "messari": get_messari_balance_sheet,
+        "coingecko": get_coingecko_balance_sheet,
     },
     "get_cashflow": {
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
+        "messari": get_messari_cashflow,
+        "coingecko": get_coingecko_cashflow,
     },
     "get_income_statement": {
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
+        "messari": get_messari_income_statement,
+        "coingecko": get_coingecko_income_statement,
     },
     # news_data
     "get_news": {
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
+        "messari": get_messari_news,
+        "coingecko": get_coingecko_news,
     },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
+        "messari": get_messari_global_news,
+        "coingecko": get_coingecko_global_news,
     },
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+        "messari": get_messari_insider_transactions,
+        "coingecko": get_coingecko_insider_transactions,
     },
 }
 
@@ -156,7 +196,7 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         try:
             return impl_func(*args, **kwargs)
-        except AlphaVantageRateLimitError:
-            continue  # Only rate limits trigger fallback
+        except (AlphaVantageRateLimitError, MessariRateLimitError, CoinGeckoRateLimitError):
+            continue  # Rate limits trigger fallback
 
     raise RuntimeError(f"No available vendor for '{method}'")

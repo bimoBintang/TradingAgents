@@ -74,3 +74,18 @@ class AgentState(MessagesState):
         RiskDebateState, "Current state of the debate on evaluating risk"
     ]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
+
+    # portfolio awareness (Phase 2)
+    portfolio_state: Annotated[str, "Current portfolio state summary for agent context"]
+    trade_history: Annotated[str, "Recent trade history and performance summary"]
+
+    # Advanced specialist reports (Phase 9)
+    quant_report: Annotated[str, "Report from the Quantitative Analyst"]
+    onchain_report: Annotated[str, "Report from the On-Chain/DeFi Analyst"]
+    macro_geo_report: Annotated[str, "Report from the Macro-Geopolitics Analyst"]
+    correlation_report: Annotated[str, "Report from the Correlation Analyst"]
+    execution_strategy: Annotated[str, "Optimized execution plan from the Execution Optimizer"]
+
+    # Phase 14: Prediction market signals
+    prediction_market_report: Annotated[str, "Report from the Prediction Market Analyst (Polymarket)"]
+

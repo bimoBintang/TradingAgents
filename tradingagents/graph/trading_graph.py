@@ -1,10 +1,14 @@
 # TradingAgents/graph/trading_graph.py
 
 import os
-from pathlib import Path
 import json
+import logging
+from uuid import uuid4
+from pathlib import Path
 from datetime import date
 from typing import Dict, Any, Tuple, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from langgraph.prebuilt import ToolNode
 
@@ -30,8 +34,49 @@ from tradingagents.agents.utils.agent_utils import (
     get_income_statement,
     get_news,
     get_insider_transactions,
-    get_global_news
+    get_global_news,
 )
+
+# Phase 9: Advanced specialist tools
+from tradingagents.agents.utils.advanced_tools import (
+    get_options_chain,
+    get_onchain_metrics,
+    get_funding_rates,
+    get_macro_indicators,
+    get_peer_data,
+)
+
+# Phase 14: Polymarket prediction markets
+from tradingagents.agents.utils.polymarket_tools import (
+    get_prediction_markets,
+    get_market_price,
+)
+
+# Phase 2: Portfolio and position tracking
+from tradingagents.execution.portfolio_manager import PortfolioManager
+from tradingagents.execution.position_tracker import PositionTracker
+# Phase 3: Broker integration and execution
+from tradingagents.execution.execution_engine import ExecutionEngine
+from tradingagents.execution.retry import RetryConfig
+from tradingagents.execution.risk_controls import RiskController
+from tradingagents.execution.stop_loss_manager import StopLossManager
+from tradingagents.execution.brokers.broker_base import BaseBroker, BrokerConnectionError
+# Phase 5: Persistent storage
+from tradingagents.storage.database import Database
+from tradingagents.storage.trade_journal import TradeJournal
+
+from tradingagents.execution.brokers.paper_broker import PaperBroker
+
+# Optional broker imports — only available when extra dependencies are installed
+try:
+    from tradingagents.execution.brokers.ccxt_broker import CcxtBroker
+except ImportError:
+    CcxtBroker = None  # type: ignore[assignment,misc]
+
+try:
+    from tradingagents.execution.brokers.alpaca_broker import AlpacaBroker
+except ImportError:
+    AlpacaBroker = None  # type: ignore[assignment,misc]
 
 from .conditional_logic import ConditionalLogic
 from .setup import GraphSetup
@@ -40,12 +85,88 @@ from .reflection import Reflector
 from .signal_processing import SignalProcessor
 
 
+def _create_broker(config: Dict[str, Any], db=None) -> BaseBroker:
+    """Factory function to create a broker based on configuration.
+
+    Runs a health check after creation to verify connectivity.
+
+    Args:
+        config: Full configuration dictionary
+
+    Returns:
+        BaseBroker instance matching the configured broker type
+
+    Raises:
+        BrokerConnectionError: if broker fails health check
+        ValueError: if broker_type is unknown
+    """
+    exec_cfg = config.get("execution", {})
+    broker_type = exec_cfg.get("broker", "paper")
+    portfolio_cfg = config.get("portfolio", {})
+
+    broker: BaseBroker
+
+    if broker_type == "paper":
+        broker = PaperBroker(
+            initial_cash=portfolio_cfg.get("initial_cash", 10000.0),
+            commission_pct=exec_cfg.get("commission_pct", 0.001),
+            slippage_pct=exec_cfg.get("slippage_pct", 0.0005),
+        )
+
+    elif broker_type == "ccxt":
+        if CcxtBroker is None:
+            raise ImportError(
+                "Broker 'ccxt' dipilih tapi paket ccxt belum terinstall. "
+                "Jalankan: pip install tradingagents[crypto]"
+            )
+        broker = CcxtBroker(
+            exchange_id=exec_cfg.get("exchange", "binance"),
+            api_key=exec_cfg.get("api_key", ""),
+            api_secret=exec_cfg.get("api_secret", ""),
+            password=exec_cfg.get("password", ""),
+            sandbox=exec_cfg.get("sandbox", True),
+            default_quote_currency=exec_cfg.get("quote_currency", "USDT"),
+            retry_config=RetryConfig.from_config(exec_cfg),
+            db=db,
+        )
+
+    elif broker_type == "alpaca":
+        if AlpacaBroker is None:
+            raise ImportError(
+                "Broker 'alpaca' dipilih tapi paket alpaca-py belum terinstall. "
+                "Jalankan: pip install tradingagents[stocks]"
+            )
+        broker = AlpacaBroker(
+            api_key=exec_cfg.get("api_key", ""),
+            api_secret=exec_cfg.get("api_secret", ""),
+            paper=exec_cfg.get("mode", "paper") != "live",
+        )
+
+    else:
+        raise ValueError(f"Unknown broker type: {broker_type}. Use 'paper', 'ccxt', or 'alpaca'.")
+
+    # Health check: ping broker to verify connectivity
+    try:
+        broker.health_check()
+        logger.info("%s health check passed", broker.name)
+    except Exception as e:
+        logger.error("%s health check FAILED: %s", broker.name, e)
+        raise
+
+    return broker
+
 class TradingAgentsGraph:
-    """Main class that orchestrates the trading agents framework."""
+    """Main class that orchestrates the trading agents framework.
+    
+    Enhanced with:
+    - Portfolio awareness (Phase 2): agents receive portfolio context
+    - Broker integration (Phase 3): decisions can be auto-executed via brokers
+    """
 
     def __init__(
         self,
-        selected_analysts=["market", "social", "news", "fundamentals"],
+        selected_analysts=["market", "social", "news", "fundamentals",
+                           "quant", "onchain", "macro_geo", "correlation"],
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
@@ -61,6 +182,24 @@ class TradingAgentsGraph:
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+
+        # Phase 5: Session ID and storage
+        self.session_id = str(uuid4())
+        self.database = None
+        self.journal = None
+        storage_cfg = self.config.get("storage", {})
+        if storage_cfg.get("enabled", False):
+            try:
+                self.database = Database(storage_cfg.get("db_path", "~/.tradingagents/trading.db"))
+                self.journal = TradeJournal(
+                    db=self.database,
+                    session_id=self.session_id,
+                    risk_free_rate_annual=storage_cfg.get("risk_free_rate_annual", 0.05),
+                )
+            except Exception as e:
+                logger.warning("Database init failed: %s. Continuing without persistence.", e)
+                self.database = None
+                self.journal = None
 
         # Update the interface's config
         set_config(self.config)
@@ -93,13 +232,91 @@ class TradingAgentsGraph:
 
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
-        
-        # Initialize memories
-        self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
-        self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
-        self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
-        self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", self.config)
-        self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", self.config)
+
+        # Initialize memories (Phase 5: with optional database persistence)
+        mem_config = {"max_memory_items_per_agent": storage_cfg.get("max_memory_items_per_agent", 500)}
+        self.bull_memory = FinancialSituationMemory("bull_memory", mem_config, self.config, database=self.database)
+        self.bear_memory = FinancialSituationMemory("bear_memory", mem_config, self.config, database=self.database)
+        self.trader_memory = FinancialSituationMemory("trader_memory", mem_config, self.config, database=self.database)
+        self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", mem_config, self.config, database=self.database)
+        self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", mem_config, self.config, database=self.database)
+
+        # ── Phase 2: Portfolio Manager ────────────────────────────────
+        portfolio_cfg = self.config.get("portfolio", {})
+        self.portfolio_manager = PortfolioManager(
+            initial_cash=portfolio_cfg.get("initial_cash", 10000.0),
+            max_position_pct=portfolio_cfg.get("max_position_pct", 0.1),
+            max_total_positions=portfolio_cfg.get("max_total_positions", 10),
+            state_file=portfolio_cfg.get("state_file"),
+        )
+
+        # ── Phase 2: Position Tracker ─────────────────────────────────
+        tracker_cfg = self.config.get("position_tracker", {})
+        self.position_tracker = PositionTracker(
+            trailing_stop_pct=tracker_cfg.get("trailing_stop_pct", 0.0),
+            max_hold_days=tracker_cfg.get("max_hold_days", 0),
+        )
+
+        # ── Phase 3: Broker & Execution Engine ────────────────────────
+        exec_cfg = self.config.get("execution", {})
+        self.execution_mode = exec_cfg.get("mode", "disabled")
+
+        self.broker = None
+        self.execution_engine = None
+
+        if self.execution_mode != "disabled":
+            self.broker = _create_broker(self.config, db=self.database)
+
+            # Phase 4: Risk Controller (reads flat config keys)
+            risk_cfg = self.config.get("risk_controls", {})
+            if risk_cfg.get("kill_switch_enabled", True):
+                self.risk_controller = RiskController(
+                    max_drawdown_pct={
+                        "daily": risk_cfg.get("max_daily_loss_pct", 0.05),
+                        "weekly": risk_cfg.get("max_weekly_loss_pct", 0.10),
+                    },
+                    max_position_pct=risk_cfg.get("max_position_pct", 0.10),
+                    max_concurrent_positions=risk_cfg.get("max_concurrent_positions", 5),
+                    risk_per_trade_pct=risk_cfg.get("risk_per_trade_pct", 0.02),
+                    consecutive_loss_limit=risk_cfg.get("consecutive_loss_limit", 3),
+                    consecutive_loss_cooldown_seconds=risk_cfg.get("cooldown_seconds", 1800),
+                )
+            else:
+                self.risk_controller = None
+
+            # Phase 4: StopLossManager (reads from risk_controls config)
+            self.stop_loss_manager = StopLossManager(
+                trailing_stop_pct=risk_cfg.get("trailing_stop_pct", 0.05),
+                atr_multiplier=risk_cfg.get("atr_multiplier", 2.0),
+                max_hold_hours=risk_cfg.get("max_hold_hours", 72),
+            )
+
+            # Phase 6: Notifier
+            from tradingagents.notifications.notifier import Notifier
+            self.notifier = Notifier(self.config)
+
+            self.execution_engine = ExecutionEngine(
+                broker=self.broker,
+                portfolio_manager=self.portfolio_manager,
+                position_tracker=self.position_tracker,
+                risk_controller=self.risk_controller,
+                stop_loss_manager=self.stop_loss_manager,
+                journal=self.journal,
+                notifier=self.notifier,
+                min_confidence=exec_cfg.get("min_confidence", 0.5),
+                max_daily_loss_pct=exec_cfg.get("max_daily_loss_pct", 0.05),
+                cooldown_seconds=exec_cfg.get("cooldown_seconds", 300),
+                require_confirmation=exec_cfg.get("require_confirmation", True),
+                atr_timeframe=exec_cfg.get("atr_timeframe", "1h"),
+            )
+
+            # Phase 5b: Reconcile local portfolio with exchange on startup
+            if exec_cfg.get("reconcile_on_startup", True):
+                try:
+                    report = self.execution_engine.reconcile()
+                    logger.info("Startup reconciliation: %s", report.get("summary", ""))
+                except Exception as e:
+                    logger.warning("Startup reconciliation failed: %s", e)
 
         # Create tool nodes
         self.tool_nodes = self._create_tool_nodes()
@@ -119,10 +336,16 @@ class TradingAgentsGraph:
             self.invest_judge_memory,
             self.risk_manager_memory,
             self.conditional_logic,
+            enable_execution_optimizer=self.config.get("enable_execution_optimizer", True),
         )
 
         self.propagator = Propagator()
-        self.reflector = Reflector(self.quick_thinking_llm)
+        self.reflector = Reflector(
+            self.quick_thinking_llm,
+            database=self.database,
+            session_id=self.session_id,
+            max_reflections_loaded=storage_cfg.get("max_reflections_loaded", 20),
+        )
         self.signal_processor = SignalProcessor(self.quick_thinking_llm)
 
         # State tracking
@@ -184,16 +407,69 @@ class TradingAgentsGraph:
                     get_income_statement,
                 ]
             ),
+            # Phase 9: Advanced analyst tool nodes
+            "quant": ToolNode(
+                [
+                    get_stock_data,
+                    get_indicators,
+                    get_options_chain,
+                ]
+            ),
+            "onchain": ToolNode(
+                [
+                    get_onchain_metrics,
+                    get_funding_rates,
+                ]
+            ),
+            "macro_geo": ToolNode(
+                [
+                    get_global_news,
+                    get_macro_indicators,
+                ]
+            ),
+            "correlation": ToolNode(
+                [
+                    get_stock_data,
+                    get_peer_data,
+                ]
+            ),
+            # Phase 14: Polymarket prediction markets
+            "prediction_market": ToolNode(
+                [
+                    get_prediction_markets,
+                    get_market_price,
+                ]
+            ),
         }
 
-    def propagate(self, company_name, trade_date):
-        """Run the trading agents graph for a company on a specific date."""
-
+    def propagate(self, company_name, trade_date, auto_execute: bool = False):
+        """Run the trading agents graph for a company on a specific date.
+        
+        The graph includes portfolio state context so all agents can see
+        current positions, cash balance, and trade history.
+        
+        Args:
+            company_name: Ticker symbol or company name
+            trade_date: Date string for the analysis
+            auto_execute: If True and execution is enabled, auto-execute the decision
+            
+        Returns:
+            Tuple of (final_state, processed_decision, order_result)
+            - processed_decision is structured JSON string (or fallback text)
+            - order_result is OrderResult if auto_execute=True and trade was placed, else None
+        """
         self.ticker = company_name
 
-        # Initialize state
+        # Phase 2: Generate portfolio context for agent injection
+        portfolio_context = self.portfolio_manager.get_portfolio_context_string()
+        trade_history_context = self.portfolio_manager.get_trade_summary()
+
+        # Initialize state with portfolio context
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date
+            company_name,
+            trade_date,
+            portfolio_context=portfolio_context,
+            trade_history_context=trade_history_context,
         )
         args = self.propagator.get_graph_args()
 
@@ -218,8 +494,15 @@ class TradingAgentsGraph:
         # Log state
         self._log_state(trade_date, final_state)
 
-        # Return decision and processed signal
-        return final_state, self.process_signal(final_state["final_trade_decision"])
+        # Process signal — returns structured JSON
+        decision = self.process_signal(final_state["final_trade_decision"])
+
+        # Phase 3: Auto-execute if enabled
+        order_result = None
+        if auto_execute and self.execution_engine and self.execution_mode != "disabled":
+            order_result = self.execution_engine.execute_decision(decision)
+
+        return final_state, decision, order_result
 
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
@@ -230,6 +513,7 @@ class TradingAgentsGraph:
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
             "fundamentals_report": final_state["fundamentals_report"],
+            "portfolio_state": final_state.get("portfolio_state", ""),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],
@@ -283,5 +567,66 @@ class TradingAgentsGraph:
         )
 
     def process_signal(self, full_signal):
-        """Process a signal to extract the core decision."""
-        return self.signal_processor.process_signal(full_signal)
+        """Process a signal to extract the core decision.
+        
+        Returns a structured JSON string of TradeDecision when possible,
+        with a fallback to simple BUY/SELL/HOLD text.
+        """
+        return self.signal_processor.process_signal(
+            full_signal, ticker=self.ticker or ""
+        )
+
+    # ── Phase 2: Portfolio Access Methods ─────────────────────────────
+
+    def get_portfolio_state(self):
+        """Get the current portfolio state as a PortfolioState object."""
+        return self.portfolio_manager.get_portfolio_state()
+
+    def get_portfolio_summary(self) -> str:
+        """Get a human-readable portfolio summary."""
+        return self.portfolio_manager.get_portfolio_context_string()
+
+    def get_trade_summary(self) -> str:
+        """Get a summary of trading performance."""
+        return self.portfolio_manager.get_trade_summary()
+
+    def check_position_exits(self) -> list:
+        """Check all positions for stop-loss, take-profit, or trailing stop triggers."""
+        return self.position_tracker.check_all_exits(
+            self.portfolio_manager.positions
+        )
+
+    # ── Phase 3: Execution Methods ────────────────────────────────────
+
+    def execute_trade(
+        self, decision_json: str, current_price: Optional[float] = None
+    ) -> Optional["OrderResult"]:
+        """Manually execute a trade decision via the configured broker.
+
+        Args:
+            decision_json: JSON string of a TradeDecision
+            current_price: Current market price (fetched from broker if None)
+
+        Returns:
+            OrderResult if executed, None if skipped/rejected/disabled
+        """
+        if not self.execution_engine:
+            logger.warning("Execution is disabled. Set execution.mode to 'paper' or 'live'.")
+            return None
+        return self.execution_engine.execute_decision(decision_json, current_price)
+
+    def get_engine_status(self) -> dict:
+        """Get the execution engine status."""
+        if not self.execution_engine:
+            return {"enabled": False, "mode": "disabled"}
+        status = self.execution_engine.get_status()
+        status["enabled"] = True
+        status["mode"] = self.execution_mode
+        return status
+
+    def emergency_close_all(self) -> list:
+        """Emergency: activate kill switch and close all positions."""
+        if not self.execution_engine:
+            logger.warning("Execution is disabled.")
+            return []
+        return self.execution_engine.emergency_close_all()

@@ -30,7 +30,13 @@ dependencies = [
     "tqdm>=4.67.1",
     "typing-extensions>=4.14.0",
     "yfinance>=0.2.63",
+    "pydantic>=2.10.0",
 ]
+
+[project.optional-dependencies]
+crypto = ["ccxt>=4.0.0"]
+stocks = ["alpaca-py>=0.31.0"]
+brokers = ["ccxt>=4.0.0", "alpaca-py>=0.31.0"]
 
 [project.scripts]
 tradingagents = "cli.main:app"
