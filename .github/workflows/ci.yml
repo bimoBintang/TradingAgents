@@ -1,0 +1,37 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test-backend:
+    name: Run Backend Tests
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./TradingAgents
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv (Fast Python Package Manager)
+        uses: astral-sh/setup-uv@v1
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Run Orchestrator Tests
+        run: uv run pytest orchestrator/tests/ -v
+
+      - name: Run Futures Feature Tests
+        run: uv run pytest tradingagents/execution/tests/test_futures_support.py -v
