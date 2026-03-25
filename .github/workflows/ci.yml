@@ -34,7 +34,7 @@ jobs:
         run: uv pip install pytest pytest-asyncio
 
       - name: Run Orchestrator Tests
-        run: uv run pytest orchestrator/tests/ -v
+        run: uv run pytest ../orchestrator/tests/ -v
 
       - name: Run Futures Feature Tests
         run: uv run pytest tradingagents/execution/tests/test_futures_support.py -v
