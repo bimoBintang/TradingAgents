@@ -33,6 +33,24 @@ class OrderSide(str, Enum):
     SELL = "SELL"
 
 
+class MarketType(str, Enum):
+    """Market type for exchange trading."""
+    SPOT = "spot"
+    FUTURES = "future"
+
+
+class PositionSide(str, Enum):
+    """Position direction for futures trading."""
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
+class MarginType(str, Enum):
+    """Margin mode for futures trading."""
+    ISOLATED = "isolated"
+    CROSS = "cross"
+
+
 class TradeDecision(BaseModel):
     """Structured output from the Trader agent.
     
@@ -85,6 +103,19 @@ class TradeDecision(BaseModel):
     time_horizon: str = Field(
         default="short_term",
         description="Expected holding period: intraday, short_term, medium_term, long_term"
+    )
+    # ── Futures-specific fields ────────────────────────────────────────
+    leverage: int = Field(
+        default=1, ge=1, le=125,
+        description="Leverage multiplier (1 = no leverage / spot-equivalent)"
+    )
+    position_side: PositionSide = Field(
+        default=PositionSide.LONG,
+        description="Position direction for futures: LONG or SHORT"
+    )
+    margin_type: MarginType = Field(
+        default=MarginType.ISOLATED,
+        description="Margin mode: isolated or cross"
     )
     timestamp: datetime = Field(
         default_factory=datetime.utcnow,
@@ -297,6 +328,11 @@ class PositionInfo(BaseModel):
     current_price: float = Field(gt=0.0)
     entry_timestamp: datetime
     stop_loss_price: Optional[float] = None
+    # ── Futures-specific fields ────────────────────────────────────────
+    position_side: PositionSide = Field(default=PositionSide.LONG)
+    leverage: int = Field(default=1, ge=1)
+    liquidation_price: Optional[float] = None
+    margin_type: MarginType = Field(default=MarginType.ISOLATED)
     take_profit_price: Optional[float] = None
 
     @property

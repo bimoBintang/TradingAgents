@@ -61,7 +61,7 @@ _STATUS_MAP = {
 class CcxtBroker(BaseBroker):
     """Broker implementation using CCXT for cryptocurrency exchanges.
 
-    Supports spot trading across 100+ exchanges. Configure with
+    Supports spot and futures trading across 100+ exchanges. Configure with
     exchange_id and API credentials. Use sandbox=True for testnet.
 
     Properly tracks partial fills: when an order is only partially
@@ -76,6 +76,7 @@ class CcxtBroker(BaseBroker):
         password: str = "",  # Some exchanges require a passphrase
         sandbox: bool = True,
         default_quote_currency: str = "USDT",
+        market_type: str = "spot",  # "spot" or "future"
         name: str = "ccxt",
         extra_config: Optional[dict] = None,
         retry_config: Optional[RetryConfig] = None,
@@ -111,7 +112,7 @@ class CcxtBroker(BaseBroker):
             "apiKey": api_key,
             "secret": api_secret,
             "enableRateLimit": True,
-            "options": {"defaultType": "spot"},
+            "options": {"defaultType": market_type},
         }
         if password:
             config["password"] = password
@@ -129,6 +130,7 @@ class CcxtBroker(BaseBroker):
         self._cache_lock = threading.Lock()
         self._retry_config = retry_config or RetryConfig()
         self._db = db
+        self.market_type = market_type  # "spot" or "future"
 
         # Load persisted entry prices from DB (survive restarts)
         if self._db is not None:
@@ -140,7 +142,7 @@ class CcxtBroker(BaseBroker):
             except Exception as e:
                 logger.warning("Failed to load entry prices from DB: %s", e)
 
-        logger.info("Connected to %s (%s)", exchange_id, 'sandbox' if sandbox else 'LIVE')
+        logger.info("Connected to %s (%s, %s)", exchange_id, 'sandbox' if sandbox else 'LIVE', market_type)
 
     def _normalize_ticker(self, ticker: str) -> str:
         """Normalize ticker to CCXT format (e.g., 'BTC' -> 'BTC/USDT')."""
@@ -171,12 +173,16 @@ class CcxtBroker(BaseBroker):
         order_type: OrderType = OrderType.MARKET,
         limit_price: Optional[float] = None,
         stop_price: Optional[float] = None,
+        position_side: Optional[str] = None,
     ) -> OrderResult:
         """Place an order on the exchange via CCXT.
 
         Handles partial fills: if the exchange returns a partially filled order,
         the result will have status=PARTIALLY_FILLED, remaining_quantity populated,
         and average_fill_price set separately from filled_price.
+
+        Args:
+            position_side: For futures hedge mode: "LONG" or "SHORT"
         """
         symbol = self._normalize_ticker(ticker)
         ccxt_side = side.value.lower()  # "buy" or "sell"
@@ -186,6 +192,9 @@ class CcxtBroker(BaseBroker):
             params = {}
             if stop_price is not None:
                 params["stopPrice"] = stop_price
+            # Futures hedge mode: include positionSide
+            if self.market_type == "future" and position_side:
+                params["positionSide"] = position_side
 
             order = self.exchange.create_order(
                 symbol=symbol,
@@ -437,6 +446,101 @@ class CcxtBroker(BaseBroker):
                 )
         except Exception as e:
             logger.error("Position fetch failed: %s", e)
+
+        return positions
+
+    # ── Futures-Specific Methods ─────────────────────────────────────
+
+    def set_leverage(self, symbol: str, leverage: int) -> bool:
+        """Set leverage for a futures symbol.
+
+        Only effective when market_type is 'future'.
+        Returns True on success, False if skipped or failed.
+        """
+        if self.market_type != "future":
+            logger.debug("set_leverage skipped: market_type is '%s'", self.market_type)
+            return False
+        normalized = self._normalize_ticker(symbol)
+        try:
+            self.exchange.set_leverage(leverage, normalized)
+            logger.info("[CcxtBroker] Set leverage %dx for %s", leverage, normalized)
+            return True
+        except Exception as e:
+            logger.warning("[CcxtBroker] set_leverage failed for %s: %s", normalized, e)
+            return False
+
+    def set_margin_mode(self, symbol: str, margin_type: str = "isolated") -> bool:
+        """Set margin mode (isolated/cross) for a futures symbol.
+
+        Only effective when market_type is 'future'.
+        Returns True on success, False if skipped or failed.
+        """
+        if self.market_type != "future":
+            logger.debug("set_margin_mode skipped: market_type is '%s'", self.market_type)
+            return False
+        normalized = self._normalize_ticker(symbol)
+        try:
+            self.exchange.set_margin_mode(margin_type, normalized)
+            logger.info("[CcxtBroker] Set margin mode '%s' for %s", margin_type, normalized)
+            return True
+        except Exception as e:
+            # Many exchanges return error if mode is already set
+            if "already" in str(e).lower() or "no need" in str(e).lower():
+                logger.debug("Margin mode '%s' already set for %s", margin_type, normalized)
+                return True
+            logger.warning("[CcxtBroker] set_margin_mode failed for %s: %s", normalized, e)
+            return False
+
+    def get_futures_positions(self) -> List["PositionInfo"]:
+        """Fetch open futures positions using CCXT fetch_positions().
+
+        Only works when market_type is 'future'.
+        Returns PositionInfo objects with leverage, liquidation_price, etc.
+        """
+        if self.market_type != "future":
+            return self.get_positions()
+
+        from tradingagents.execution.order_models import PositionSide, MarginType
+
+        positions = []
+        try:
+            raw_positions = with_retry(
+                lambda: self.exchange.fetch_positions(),
+                config=self._retry_config,
+                operation_name="fetch_positions",
+            )
+            for pos in raw_positions:
+                contracts = float(pos.get("contracts", 0) or 0)
+                if contracts <= 0:
+                    continue
+
+                entry_price = float(pos.get("entryPrice", 0) or 0)
+                current_price = float(pos.get("markPrice", 0) or pos.get("lastPrice", 0) or 0)
+                liq_price = pos.get("liquidationPrice")
+                leverage_val = int(pos.get("leverage", 1) or 1)
+                pos_side_str = (pos.get("side", "long") or "long").upper()
+                margin_mode = (pos.get("marginMode", "isolated") or "isolated").lower()
+
+                side = OrderSide.BUY if pos_side_str in ("LONG", "BUY") else OrderSide.SELL
+                p_side = PositionSide.LONG if pos_side_str in ("LONG", "BUY") else PositionSide.SHORT
+                m_type = MarginType.CROSS if margin_mode == "cross" else MarginType.ISOLATED
+
+                positions.append(
+                    PositionInfo(
+                        ticker=pos.get("symbol", ""),
+                        side=side,
+                        quantity=contracts,
+                        entry_price=entry_price if entry_price > 0 else current_price,
+                        current_price=current_price if current_price > 0 else entry_price,
+                        entry_timestamp=datetime.utcnow(),
+                        position_side=p_side,
+                        leverage=leverage_val,
+                        liquidation_price=float(liq_price) if liq_price else None,
+                        margin_type=m_type,
+                    )
+                )
+        except Exception as e:
+            logger.error("Futures position fetch failed: %s", e)
 
         return positions
 

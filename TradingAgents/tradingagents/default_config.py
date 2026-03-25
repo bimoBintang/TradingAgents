@@ -57,6 +57,11 @@ DEFAULT_CONFIG = {
         "password": "",                      # Some exchanges require passphrase (e.g., OKX)
         "sandbox": False,                    # False = REAL account
         "quote_currency": "USDT",            # Default quote currency for CCXT
+        # Futures-specific settings
+        "market_type": "spot",               # "spot" | "future"
+        "leverage": 1,                       # Default leverage (1 = spot-equivalent)
+        "margin_type": "isolated",           # "isolated" | "cross"
+        "max_leverage": 10,                  # Hard cap leverage (safety)
         # Trade execution parameters
         "min_confidence": 0.5,               # Minimum confidence to execute
         "max_daily_loss_pct": 0.05,          # Kill switch: stop if daily loss > 5%

@@ -155,6 +155,7 @@ class RiskController:
         risk_per_trade_pct: float = 0.02,
         consecutive_loss_limit: int = 3,
         consecutive_loss_cooldown_seconds: int = 3600,
+        max_leverage: int = 10,
     ):
         """Initialize risk controller.
 
@@ -166,7 +167,7 @@ class RiskController:
             max_correlation_sectors: Max positions in the same sector
             risk_per_trade_pct: Risk budget per trade for ATR sizing (default 2%)
             consecutive_loss_limit: N consecutive losses triggers cooldown
-            consecutive_loss_cooldown_seconds: Cooldown duration after N losses
+            max_leverage: Hard cap on leverage multiplier (default 10)
         """
         self.max_drawdown_pct = max_drawdown_pct or {
             "daily": 0.05,
@@ -180,6 +181,7 @@ class RiskController:
         self.risk_per_trade_pct = risk_per_trade_pct
         self.consecutive_loss_limit = consecutive_loss_limit
         self.consecutive_loss_cooldown_seconds = consecutive_loss_cooldown_seconds
+        self.max_leverage = max_leverage
 
         # State
         self._kill_switch = False
@@ -266,7 +268,51 @@ class RiskController:
             )
             risk_score += 0.2
 
-        # ── Check 6: Correlation check ────────────────────────────────────
+        # ── Check 6a: Leverage cap (futures) ──────────────────────────
+        decision_leverage = getattr(adjusted_decision, 'leverage', 1)
+        if decision_leverage > self.max_leverage:
+            return RiskVerdict(
+                approved=False,
+                rejection_reason=(
+                    f"Leverage {decision_leverage}x exceeds max allowed "
+                    f"{self.max_leverage}x"
+                ),
+                risk_score=0.9,
+            )
+
+        # ── Check 6b: Liquidation proximity warning (futures) ─────────
+        if decision_leverage > 1:
+            liq_distance = 1.0 / decision_leverage
+            if liq_distance < 0.05:
+                warnings.append(
+                    f"⚠️ High leverage {decision_leverage}x — liquidation at "
+                    f"{liq_distance:.1%} from entry"
+                )
+                risk_score += 0.3
+            elif liq_distance < 0.10:
+                warnings.append(
+                    f"Leverage {decision_leverage}x — liquidation at "
+                    f"{liq_distance:.1%} from entry"
+                )
+                risk_score += 0.15
+
+        # ── Check 6c: Leverage-adjusted position sizing ───────────────
+        if decision_leverage > 1 and adjusted_decision.quantity_pct:
+            effective_max = self.max_position_pct / decision_leverage
+            if adjusted_decision.quantity_pct > effective_max:
+                old_pct = adjusted_decision.quantity_pct
+                adjusted_decision = TradeDecision(
+                    **{
+                        **adjusted_decision.model_dump(),
+                        "quantity_pct": round(effective_max, 4),
+                    }
+                )
+                warnings.append(
+                    f"Leverage-adjusted size: {old_pct:.1%} → {effective_max:.1%} "
+                    f"(max_pos {self.max_position_pct:.0%} / {decision_leverage}x)"
+                )
+
+        # ── Check 7: Correlation check ────────────────────────────────────
         if decision.action in (TradeAction.BUY, TradeAction.STRONG_BUY):
             corr_msg = self._check_correlation(decision.ticker, portfolio.open_positions)
             if corr_msg:

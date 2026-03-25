@@ -272,12 +272,25 @@ class ExecutionEngine:
             return None  # Do NOT execute — await approval
 
         # Step 8: Execute order (only reached if require_confirmation=False)
+        # Futures pre-order setup: leverage & margin mode
+        position_side_param = None
+        if hasattr(decision, 'leverage') and decision.leverage > 1:
+            if hasattr(self.broker, 'set_leverage'):
+                self.broker.set_leverage(ticker, decision.leverage)
+            if hasattr(self.broker, 'set_margin_mode'):
+                margin_mode = getattr(decision, 'margin_type', None)
+                if margin_mode:
+                    self.broker.set_margin_mode(ticker, margin_mode.value if hasattr(margin_mode, 'value') else str(margin_mode))
+            if hasattr(decision, 'position_side'):
+                position_side_param = decision.position_side.value if hasattr(decision.position_side, 'value') else str(decision.position_side)
+
         result = self.broker.place_order(
             ticker=ticker,
             side=order_side,
             quantity=quantity,
             order_type=decision.order_type,
             limit_price=decision.limit_price,
+            **({"position_side": position_side_param} if position_side_param else {}),
         )
 
         # Attach idempotency key to result
