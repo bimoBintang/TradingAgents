@@ -30,6 +30,11 @@ Your analysis MUST cover:
 6. **Risk-Adjusted Position Size**: Verify that the position size respects the portfolio's
    risk parameters (max position %, current exposure, drawdown headroom).
 
+7. **Futures-Specific** (if applicable): Consider funding rate timing (enter before negative
+   funding for shorts, positive for longs). Recommend max leverage based on the volatility
+   regime (low vol → higher leverage ok, high vol → reduce leverage). Calculate liquidation
+   price distance from entry and warn if < 5%.
+
 After your analysis, output the ENHANCED execution plan by wrapping it in <EXECUTION_STRATEGY> tags:
 
 <EXECUTION_STRATEGY>

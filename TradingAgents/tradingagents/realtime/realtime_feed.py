@@ -40,6 +40,7 @@ class RealtimeFeed:
         stop_loss_manager=None,
         execution_engine=None,
         notifier=None,
+        broker=None,
         config: Optional[dict] = None,
     ):
         """Initialize the realtime feed.
@@ -49,12 +50,14 @@ class RealtimeFeed:
             stop_loss_manager: StopLossManager for exit evaluation
             execution_engine: ExecutionEngine for auto-executing exits
             notifier: Notifier for Telegram alerts
+            broker: Optional broker for price fetching (supports futures)
             config: Full application config dict
         """
         self.portfolio = portfolio_manager
         self.stop_loss_manager = stop_loss_manager
         self.execution_engine = execution_engine
         self.notifier = notifier
+        self.broker = broker
         self.config = config or {}
 
         rt_cfg = self.config.get("realtime", {})
@@ -107,43 +110,55 @@ class RealtimeFeed:
                 time.sleep(1)
 
     def _poll_prices(self) -> None:
-        """Fetch current prices and update portfolio."""
+        """Fetch current prices and update portfolio.
+
+        Uses broker.get_current_price() if a broker is available (supports
+        futures symbols like BTC/USDT:USDT). Falls back to yfinance for spot.
+        """
         positions = self.portfolio.positions
         if not positions:
             return
 
         tickers = list(positions.keys())
+        price_updates: Dict[str, float] = {}
 
-        # Fetch prices via yfinance
-        try:
-            import yfinance as yf
-
-            price_updates: Dict[str, float] = {}
-
+        # Strategy 1: Use broker (supports spot + futures)
+        if self.broker:
             for ticker in tickers:
                 try:
-                    t = yf.Ticker(ticker)
-                    info = t.fast_info
-                    price = getattr(info, 'last_price', None)
-                    if price is None:
-                        price = getattr(info, 'previous_close', None)
+                    price = self.broker.get_current_price(ticker)
                     if price and price > 0:
                         price_updates[ticker] = float(price)
                 except Exception:
                     continue
+        else:
+            # Strategy 2: Fallback to yfinance (spot only)
+            try:
+                import yfinance as yf
 
-            if price_updates:
-                # Update portfolio with new prices
-                self.portfolio.update_prices(price_updates)
+                for ticker in tickers:
+                    try:
+                        t = yf.Ticker(ticker)
+                        info = t.fast_info
+                        price = getattr(info, 'last_price', None)
+                        if price is None:
+                            price = getattr(info, 'previous_close', None)
+                        if price and price > 0:
+                            price_updates[ticker] = float(price)
+                    except Exception:
+                        continue
+            except ImportError:
+                logger.warning("[RealtimeFeed] yfinance not available for price polling")
+            except Exception as e:
+                logger.warning(f"[RealtimeFeed] Price fetch error: {e}")
 
-                # Check for exits
-                if self.auto_exit_enabled:
-                    self._check_exits(price_updates)
+        if price_updates:
+            # Update portfolio with new prices
+            self.portfolio.update_prices(price_updates)
 
-        except ImportError:
-            logger.warning("[RealtimeFeed] yfinance not available for price polling")
-        except Exception as e:
-            logger.warning(f"[RealtimeFeed] Price fetch error: {e}")
+            # Check for exits
+            if self.auto_exit_enabled:
+                self._check_exits(price_updates)
 
     def _check_exits(self, price_updates: Dict[str, float]) -> None:
         """Check all positions for exit triggers.

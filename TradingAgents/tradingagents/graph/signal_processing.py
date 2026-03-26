@@ -17,6 +17,9 @@ You MUST respond with ONLY a valid JSON object matching this exact schema (no ex
     "order_type": "MARKET" | "LIMIT",
     "stop_loss_pct": <float 0.0 to 1.0 or null — e.g. 0.05 for 5% stop-loss>,
     "take_profit_pct": <float 0.0 to 1.0 or null — e.g. 0.10 for 10% take-profit>,
+    "leverage": <int 1-125, default 1 for spot>,
+    "position_side": "LONG" | "SHORT",
+    "margin_type": "isolated" | "cross",
     "reasoning": "<brief reasoning for the decision>",
     "key_factors": ["<factor 1>", "<factor 2>", ...],
     "risk_reward_ratio": <float or null>,
@@ -29,6 +32,9 @@ Rules:
 - stop_loss_pct: Always set for BUY/SELL. Typical: 0.03-0.08.
 - take_profit_pct: Always set for BUY/SELL. Should be > stop_loss_pct for good risk/reward.
 - key_factors: Top 3-5 factors.
+- leverage: Extract from the report. Default to 1 if not mentioned (spot trading).
+- position_side: LONG for bullish, SHORT for bearish. Default LONG.
+- margin_type: Default "isolated". Set "cross" only if explicitly mentioned.
 - If the decision is HOLD, set quantity_pct to 0.0 and stop_loss/take_profit to null.
 """
 
@@ -40,7 +46,8 @@ class SignalProcessor:
         """Initialize with an LLM for processing."""
         self.quick_thinking_llm = quick_thinking_llm
 
-    def process_signal(self, full_signal: str, ticker: str = "") -> str:
+    def process_signal(self, full_signal: str, ticker: str = "",
+                       execution_strategy: str = "") -> str:
         """Process a full trading signal to extract the core decision.
 
         Returns the structured JSON string of the TradeDecision, or a simple
@@ -49,12 +56,18 @@ class SignalProcessor:
         Args:
             full_signal: Complete trading signal text from the risk judge
             ticker: The ticker symbol being analyzed
+            execution_strategy: Optional execution strategy from Execution Optimizer
 
         Returns:
             JSON string of TradeDecision, or simple action string as fallback
         """
+        # Combine signal with execution strategy context if available
+        combined_signal = full_signal
+        if execution_strategy:
+            combined_signal += f"\n\nExecution Strategy Optimization:\n{execution_strategy}"
+
         # Try structured extraction
-        trade_decision = self.extract_structured_decision(full_signal, ticker)
+        trade_decision = self.extract_structured_decision(combined_signal, ticker)
         if trade_decision:
             return trade_decision.model_dump_json(indent=2)
 

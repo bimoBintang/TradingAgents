@@ -126,6 +126,7 @@ def _create_broker(config: Dict[str, Any], db=None) -> BaseBroker:
             password=exec_cfg.get("password", ""),
             sandbox=exec_cfg.get("sandbox", True),
             default_quote_currency=exec_cfg.get("quote_currency", "USDT"),
+            market_type=exec_cfg.get("market_type", "spot"),
             retry_config=RetryConfig.from_config(exec_cfg),
             db=db,
         )
@@ -280,6 +281,7 @@ class TradingAgentsGraph:
                     risk_per_trade_pct=risk_cfg.get("risk_per_trade_pct", 0.02),
                     consecutive_loss_limit=risk_cfg.get("consecutive_loss_limit", 3),
                     consecutive_loss_cooldown_seconds=risk_cfg.get("cooldown_seconds", 1800),
+                    max_leverage=exec_cfg.get("max_leverage", 10),
                 )
             else:
                 self.risk_controller = None
@@ -495,7 +497,11 @@ class TradingAgentsGraph:
         self._log_state(trade_date, final_state)
 
         # Process signal — returns structured JSON
-        decision = self.process_signal(final_state["final_trade_decision"])
+        decision = self.signal_processor.process_signal(
+            final_state["final_trade_decision"],
+            ticker=self.ticker or "",
+            execution_strategy=final_state.get("execution_strategy", ""),
+        )
 
         # Phase 3: Auto-execute if enabled
         order_result = None

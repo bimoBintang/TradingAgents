@@ -19,6 +19,9 @@ You MUST end your response with a structured JSON block wrapped in <TRADE_DECISI
     "order_type": "MARKET" | "LIMIT",
     "stop_loss_pct": <float or null — e.g. 0.05 for 5%>,
     "take_profit_pct": <float or null — e.g. 0.10 for 10%>,
+    "leverage": <int 1-125, default 1 for spot>,
+    "position_side": "LONG" | "SHORT",
+    "margin_type": "isolated" | "cross",
     "reasoning": "<concise reasoning>",
     "key_factors": ["<factor1>", "<factor2>", "<factor3>"],
     "risk_reward_ratio": <float or null>,
@@ -32,6 +35,13 @@ Guidelines for position sizing:
 - HOLD: 0.0 (no new position)
 - SELL: close existing position or 0.0 if no position
 - STRONG_SELL: close all existing positions for this ticker
+
+Futures Trading Guidelines:
+- Set leverage based on conviction and volatility (1x = spot, 3-5x = moderate, 10x+ = aggressive)
+- position_side: LONG for bullish, SHORT for bearish
+- Default to "isolated" margin for safety; use "cross" only for hedged positions
+- Higher leverage = smaller quantity_pct (auto-adjusted by risk controller)
+- If trading spot, set leverage=1, position_side="LONG", margin_type="isolated"
 
 Always set stop_loss_pct (e.g. 0.03-0.08) and take_profit_pct for actionable trades. Ensure risk_reward_ratio > 1.5 for good trade quality.
 
