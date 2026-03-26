@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { cx } from '../utils/cx';
-import { Key, Bell, Shield, Brain, Monitor, CheckCircle2, AlertCircle, Loader2, Save, Zap, Cpu, Server, Settings2, Send, Activity, TrendingDown, Calendar, Clock, MessageSquare, Target } from 'lucide-react';
+import { Key, Bell, Shield, Brain, Monitor, CheckCircle2, AlertCircle, Loader2, Save, Zap, Cpu, Server, Settings2, Send, Activity, TrendingDown, Calendar, Clock, MessageSquare, Target, ShieldAlert, Crosshair } from 'lucide-react';
 import { useConfig } from '../hooks/useApi';
 import { api } from '../services/api';
 
@@ -98,6 +98,7 @@ export const SystemSettingsPage: React.FC = () => {
 
   const execution = localConfig.execution ?? {};
   const order_flow = localConfig.order_flow ?? {};
+  const risk_controls = localConfig.risk_controls ?? {};
   const notifications = localConfig.notifications ?? {};
 
 
@@ -110,6 +111,7 @@ export const SystemSettingsPage: React.FC = () => {
           {[
             { id: 'api', icon: Key, label: 'API Management' },
             { id: 'execution', icon: Activity, label: 'Execution & Order Flow' },
+            { id: 'risk', icon: ShieldAlert, label: 'Risk Controls (New)' },
             { id: 'ai_models', icon: Brain, label: 'AI Language Models' },
             { id: 'alerts', icon: Bell, label: 'Alerts & Notifications' },
           ].map(item => (
@@ -348,7 +350,7 @@ export const SystemSettingsPage: React.FC = () => {
                     </div>
 
                     {/* Futures & Leverage Setup */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6 pt-6 border-t border-slate-800/50">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6 pt-6 border-t border-slate-800/50">
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Market Type</label>
                         <select 
@@ -358,6 +360,18 @@ export const SystemSettingsPage: React.FC = () => {
                         >
                           <option value="spot">Spot Market (No Leverage)</option>
                           <option value="future">Futures (Perpetual / Margin)</option>
+                        </select>
+                      </div>
+
+                      <div className={cx("transition-opacity duration-300", execution.market_type === 'future' ? "opacity-100" : "opacity-30 pointer-events-none")}>
+                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Margin Mode</label>
+                        <select 
+                          value={execution.margin_type ?? 'isolated'}
+                          onChange={(e) => setNestedValue('execution.margin_type', e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700/50 text-slate-200 text-sm rounded-lg p-3 outline-none focus:border-blue-500 transition-all cursor-pointer"
+                        >
+                          <option value="isolated">Isolated (Safer)</option>
+                          <option value="cross">Cross (Shared Balance)</option>
                         </select>
                       </div>
                       
@@ -526,6 +540,181 @@ export const SystemSettingsPage: React.FC = () => {
                  </CardContent>
                </Card>
              </div>
+          </div>
+        )}
+
+        {/* VIEW: RISK CONTROLS */}
+        {activeMenu === 'risk' && (
+          <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            
+            {/* Kill Switch Panel */}
+            <Card className={cx("border transition-colors duration-300", risk_controls.kill_switch_enabled ? "bg-rose-950/20 border-rose-900/50" : "bg-slate-900/50 border-slate-800")}>
+              <CardContent className="p-6">
+                <div className="flex flex-col md:flex-row justify-between gap-6">
+                  <div className="flex gap-4">
+                    <div className={cx("mt-1 w-12 h-12 rounded-xl flex items-center justify-center shrink-0 shadow-inner", risk_controls.kill_switch_enabled ? "bg-rose-500/20 shadow-rose-500/10" : "bg-slate-800/50")}>
+                      <ShieldAlert className={risk_controls.kill_switch_enabled ? "text-rose-400" : "text-slate-500"} size={26} />
+                    </div>
+                    <div>
+                      <h3 className={cx("text-xl font-bold mb-1", risk_controls.kill_switch_enabled ? "text-rose-400" : "text-slate-200")}>
+                        Automated Kill Switch
+                      </h3>
+                      <p className="text-sm text-slate-400 max-w-2xl leading-relaxed">
+                        When enabled, the bot will automatically <strong>HALT ALL TRADING</strong> and cancel open orders if max daily or weekly loss limits are breached. Highly recommended for live capital.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center shrink-0">
+                    <Toggle enabled={!!risk_controls.kill_switch_enabled} onChange={(v) => setNestedValue('risk_controls.kill_switch_enabled', v)} />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Drawdown Limits */}
+            <div className={cx("flex flex-col gap-6 transition-all duration-500", risk_controls.kill_switch_enabled ? "opacity-100" : "opacity-30 pointer-events-none")}>
+              <Card className="bg-slate-900/50 border-slate-800">
+                <CardHeader className="py-5 border-b border-slate-800/50">
+                  <CardTitle className="text-base flex items-center gap-2 text-slate-200">
+                    <TrendingDown className="text-rose-400" size={18} /> Drawdown Limits (Kill Triggers)
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    
+                    <div className="flex flex-col gap-4">
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                        <span>Max Daily Loss (%)</span>
+                        <span className="text-rose-400 font-mono font-bold">
+                          {((risk_controls.max_daily_loss_pct ?? 0.05) * 100).toFixed(1)}%
+                        </span>
+                      </label>
+                      <input 
+                        type="range" min="0.01" max="0.2" step="0.01"
+                        value={risk_controls.max_daily_loss_pct ?? 0.05}
+                        onChange={(e) => setNestedValue('risk_controls.max_daily_loss_pct', parseFloat(e.target.value))}
+                        className="w-full accent-rose-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-4">
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                        <span>Max Weekly Loss (%)</span>
+                        <span className="text-rose-400 font-mono font-bold">
+                          {((risk_controls.max_weekly_loss_pct ?? 0.10) * 100).toFixed(1)}%
+                        </span>
+                      </label>
+                      <input 
+                        type="range" min="0.02" max="0.4" step="0.01"
+                        value={risk_controls.max_weekly_loss_pct ?? 0.10}
+                        onChange={(e) => setNestedValue('risk_controls.max_weekly_loss_pct', parseFloat(e.target.value))}
+                        className="w-full accent-rose-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Position Sizing */}
+            <Card className="bg-slate-900/50 border-slate-800">
+              <CardHeader className="py-5 border-b border-slate-800/50">
+                <CardTitle className="text-base flex items-center gap-2 text-slate-200">
+                  <Crosshair className="text-blue-400" size={18} /> Asset Allocation & Limits
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-6">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Max Position Size (%)</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      Maximum percentage of your total equity allocated per single trade. Default: 10% (0.1).
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <input 
+                        type="number" step="0.01" min="0.01" max="1"
+                        value={risk_controls.max_position_pct ?? 0.10}
+                        onChange={(e) => setNestedValue('risk_controls.max_position_pct', parseFloat(e.target.value))}
+                        className="flex-1 bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-blue-500 font-mono"
+                      />
+                      <span className="bg-slate-800 px-3 py-3 rounded-xl border border-slate-700 font-mono text-sm text-blue-400 w-16 text-center">
+                        {Math.round((risk_controls.max_position_pct ?? 0.10) * 100)}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Max Concurrent Positions</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      The max number of simultaneous open trades the bot is allowed to maintain.
+                    </p>
+                    <input 
+                      type="number" step="1" min="1" max="50"
+                      value={risk_controls.max_concurrent_positions ?? 5}
+                      onChange={(e) => setNestedValue('risk_controls.max_concurrent_positions', parseInt(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-blue-500 font-mono"
+                    />
+                  </div>
+
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Smart Exits */}
+            <Card className="bg-slate-900/50 border-slate-800">
+              <CardHeader className="py-5 border-b border-slate-800/50">
+                <CardTitle className="text-base flex items-center gap-2 text-slate-200">
+                  <Activity className="text-emerald-400" size={18} /> Smart Stops & Exits
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-6">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Trailing Stop (%)</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      Drops stop-loss dynamically behind the peak price (e.g. 0.05 = 5%). 0 to disable.
+                    </p>
+                    <input 
+                      type="number" step="0.01" min="0" max="1"
+                      value={risk_controls.trailing_stop_pct ?? 0.05}
+                      onChange={(e) => setNestedValue('risk_controls.trailing_stop_pct', parseFloat(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-emerald-500 font-mono"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">ATR Multiplier</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      Initial stop-loss distance calculation based on volatility (Average True Range).
+                    </p>
+                    <input 
+                      type="number" step="0.1"
+                      value={risk_controls.atr_multiplier ?? 2.0}
+                      onChange={(e) => setNestedValue('risk_controls.atr_multiplier', parseFloat(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-emerald-500 font-mono"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Max Hold Time (Hrs)</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      Force exits a stagnant trade after this many hours.
+                    </p>
+                    <input 
+                      type="number" step="1"
+                      value={risk_controls.max_hold_hours ?? 72}
+                      onChange={(e) => setNestedValue('risk_controls.max_hold_hours', parseInt(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-emerald-500 font-mono"
+                    />
+                  </div>
+
+                </div>
+              </CardContent>
+            </Card>
+
           </div>
         )}
 
