@@ -285,14 +285,22 @@ export const SystemSettingsPage: React.FC = () => {
 
                   {/* API Credentials Input Form */}
                   <div className="mt-2 p-6 rounded-xl border border-slate-800 bg-slate-950/50">
-                    <div className="mb-6">
-                      <h4 className="font-bold text-slate-100 flex items-center gap-2">
-                        <Key size={16} className="text-slate-400" /> 
-                        Connection Setup — <span className="text-blue-400">{(execution.exchange ?? 'binance').toUpperCase()}</span>
-                      </h4>
-                      <p className="text-xs text-slate-500 mt-1">Credentials are securely sanitized before being saved to local persistence.</p>
+                    <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div>
+                        <h4 className="font-bold text-slate-100 flex items-center gap-2">
+                          <Key size={16} className="text-slate-400" /> 
+                          Connection Setup — <span className="text-blue-400">{(execution.exchange ?? 'binance').toUpperCase()}</span>
+                        </h4>
+                        <p className="text-xs text-slate-500 mt-1">Credentials are securely sanitized before being saved to local persistence.</p>
+                      </div>
+                      <div className="flex items-center gap-3 bg-slate-900/80 px-4 py-2 rounded-lg border border-slate-700/50">
+                        <span className="text-xs font-bold text-slate-400 uppercase">Testnet (Sandbox)</span>
+                        <Toggle 
+                          enabled={execution.sandbox ?? false}
+                          onChange={(v) => setNestedValue('execution.sandbox', v)} 
+                        />
+                      </div>
                     </div>
-
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">API Key</label>
@@ -407,6 +415,68 @@ export const SystemSettingsPage: React.FC = () => {
         {activeMenu === 'execution' && (
           <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
              
+             {/* Execution Criteria */}
+             <Card className="bg-slate-900/50 border-slate-800">
+               <CardHeader className="py-5 border-b border-slate-800/50">
+                 <CardTitle className="text-base flex items-center gap-2 text-slate-200">
+                   <Target className="text-blue-400" size={18} /> Execution Criteria & Cooldowns
+                 </CardTitle>
+               </CardHeader>
+               <CardContent className="p-6">
+                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                   
+                   <div className="flex flex-col gap-2">
+                     <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Min Confidence Score</label>
+                     <p className="text-xs text-slate-500 mb-2 h-10">
+                       Minimum confidence level (0.0 to 1.0) required from the AI to execute a trade.
+                     </p>
+                     <div className="flex items-center gap-3">
+                       <input 
+                         type="range" min="0" max="1" step="0.05"
+                         value={execution.min_confidence ?? 0.5}
+                         onChange={(e) => setNestedValue('execution.min_confidence', parseFloat(e.target.value))}
+                         className="flex-1 accent-blue-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                       />
+                       <span className="text-blue-400 font-mono font-bold w-12 text-right">
+                         {Math.round((execution.min_confidence ?? 0.5) * 100)}%
+                       </span>
+                     </div>
+                   </div>
+
+                   <div className="flex flex-col gap-2">
+                     <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Trading Cooldown (Sec)</label>
+                     <p className="text-xs text-slate-500 mb-2 h-10">
+                       Wait time between regular trades to prevent overtrading on the same asset.
+                     </p>
+                     <input 
+                       type="number" step="1" min="0" max="86400"
+                       value={execution.cooldown_seconds ?? 300}
+                       onChange={(e) => setNestedValue('execution.cooldown_seconds', parseInt(e.target.value))}
+                       className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-blue-500 font-mono"
+                     />
+                   </div>
+
+                   <div className="flex flex-col gap-2 mt-2">
+                     <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Require Manual Confirmation</label>
+                     <p className="text-xs text-slate-500 mb-2 h-10">
+                       When enabled, trades will be staged but not executed until you manually approve them.
+                     </p>
+                     <div className="flex items-center gap-3 mt-1">
+                       <Toggle 
+                         enabled={execution.require_confirmation ?? true}
+                         onChange={(v) => setNestedValue('execution.require_confirmation', v)} 
+                       />
+                       <span className={cx("text-sm font-bold", (execution.require_confirmation ?? true) ? "text-amber-400" : "text-emerald-400")}>
+                         {(execution.require_confirmation ?? true) ? 'REQUIRED' : 'Auto-Execute'}
+                       </span>
+                     </div>
+                   </div>
+
+                 </div>
+               </CardContent>
+             </Card>
+
+
              {/* Smart Execution Guard Master Switch */}
              <Card className={cx("border transition-colors duration-300", order_flow.enabled ? "bg-emerald-950/20 border-emerald-900/50" : "bg-slate-900/50 border-slate-800")}>
                <CardContent className="p-6">
