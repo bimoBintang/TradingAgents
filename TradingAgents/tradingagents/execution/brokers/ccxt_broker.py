@@ -70,7 +70,7 @@ class CcxtBroker(BaseBroker):
 
     def __init__(
         self,
-        exchange_id: str = "binance",
+        exchange_id: str = "bybit",
         api_key: str = "",
         api_secret: str = "",
         password: str = "",  # Some exchanges require a passphrase
@@ -114,6 +114,12 @@ class CcxtBroker(BaseBroker):
             "enableRateLimit": True,
             "options": {"defaultType": market_type},
         }
+        
+        # ── Bypass ISP Blocks (e.g. Indonesia) for Binance ──
+        # Use official alternative endpoints that are often unblocked
+        if exchange_id == "binance" and not sandbox:
+            config["hostname"] = "api1.binance.com"
+
         if password:
             config["password"] = password
         if extra_config:

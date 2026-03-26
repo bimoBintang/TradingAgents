@@ -186,21 +186,23 @@ def get_funding_rates(
     import urllib.request
 
     ticker = symbol.upper().replace("-USD", "").replace("-USDT", "").replace("USD", "")
-    binance_symbol = f"{ticker}USDT"
+    bybit_symbol = f"{ticker}USDT"
 
-    url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={binance_symbol}&limit=10"
+    url = f"https://api.bybit.com/v5/market/funding/history?category=linear&symbol={bybit_symbol}&limit=10"
     req = urllib.request.Request(url, headers={"User-Agent": "TradingAgents/1.0"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read().decode())
 
-    if not data:
+    result_list = data.get("result", {}).get("list", [])
+    if data.get("retCode") != 0 or not result_list:
         return json.dumps({
             "status": "no_data",
-            "symbol": binance_symbol,
-            "message": f"No funding rate data for {binance_symbol}",
+            "symbol": bybit_symbol,
+            "message": f"No funding rate data for {bybit_symbol}",
         })
 
-    rates = [{"time": r.get("fundingTime"), "rate": float(r.get("fundingRate", 0))} for r in data]
+    # Bybit returns newest first, reverse it to get chronological order like old binance
+    rates = [{"time": int(r.get("fundingRateTimestamp", 0)), "rate": float(r.get("fundingRate", 0))} for r in reversed(result_list)]
     latest = rates[-1]["rate"] if rates else 0
     avg = sum(r["rate"] for r in rates) / len(rates) if rates else 0
 
@@ -212,7 +214,7 @@ def get_funding_rates(
 
     return json.dumps({
         "status": "ok",
-        "symbol": binance_symbol,
+        "symbol": bybit_symbol,
         "latest_funding_rate": round(latest, 6),
         "avg_funding_rate_10": round(avg, 6),
         "sentiment_signal": sentiment,

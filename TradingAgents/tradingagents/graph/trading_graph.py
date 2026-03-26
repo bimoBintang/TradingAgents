@@ -121,7 +121,7 @@ def _create_broker(config: Dict[str, Any], db=None) -> BaseBroker:
                 "Jalankan: pip install tradingagents[crypto]"
             )
         broker = CcxtBroker(
-            exchange_id=exec_cfg.get("exchange", "binance"),
+            exchange_id=exec_cfg.get("exchange", "bybit"),
             api_key=exec_cfg.get("api_key", ""),
             api_secret=exec_cfg.get("api_secret", ""),
             password=exec_cfg.get("password", ""),
