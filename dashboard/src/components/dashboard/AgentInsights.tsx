@@ -148,9 +148,20 @@ export const AgentInsights: React.FC<AgentInsightsProps> = ({ ticker, className 
                <Zap size={24} className="text-rose-500" />
              </div>
              <p className="font-bold text-sm tracking-wider uppercase">Signal Generation Failed</p>
-             <p className="font-mono text-[10px] w-full max-w-sm wrap-break-word bg-rose-500/5 p-3 rounded border border-rose-500/10 text-rose-500/80">
-               {error || analysis?.error || "Neural network timeout. Please retry."}
-             </p>
+             <div className="w-full max-w-sm bg-rose-500/5 p-3 rounded border border-rose-500/10 text-rose-500/80">
+               {(error || analysis?.error || "").includes("authentication method") || (error || analysis?.error || "").includes("api_key") ? (
+                 <div className="flex flex-col gap-1 text-xs">
+                   <strong className="text-rose-400">Missing AI API Key</strong>
+                   <span className="opacity-90 leading-relaxed font-sans text-[11px]">
+                     Go to <b>System Settings &rarr; AI Language Models</b> to add your provider API Key.
+                   </span>
+                 </div>
+               ) : (
+                 <p className="font-mono text-[10px] wrap-break-word">
+                   {error || analysis?.error || "Neural network timeout. Please retry."}
+                 </p>
+               )}
+             </div>
            </div>
         )}
 
