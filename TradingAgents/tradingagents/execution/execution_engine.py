@@ -58,11 +58,13 @@ class ExecutionEngine:
         stop_loss_manager: Optional[StopLossManager] = None,
         journal = None,
         notifier = None,
+        order_flow_analyzer = None,
         min_confidence: float = 0.5,
         max_daily_loss_pct: float = 0.05,
         cooldown_seconds: int = 300,
         require_confirmation: bool = True,
         atr_timeframe: str = "1h",
+        order_flow_config: Optional[dict] = None,
     ):
         """Initialize the execution engine.
 
@@ -74,11 +76,13 @@ class ExecutionEngine:
             stop_loss_manager: Optional Phase 4 StopLossManager for exit monitoring
             journal: Optional Phase 5 TradeJournal for persistent logging
             notifier: Optional Phase 6 Notifier for Telegram alerts
+            order_flow_analyzer: Optional OrderFlowAnalyzer for order book guard
             min_confidence: Minimum confidence score to execute (0.0-1.0)
             max_daily_loss_pct: Max daily loss as % of equity to trigger kill switch
             cooldown_seconds: Minimum seconds between trades on same ticker
             require_confirmation: Require manual confirmation before live trades
             atr_timeframe: OHLCV timeframe for ATR calculation via CCXT (e.g. '1h', '4h', '1d')
+            order_flow_config: Config dict for order flow guard (max_wait, poll_interval, etc.)
         """
         self.broker = broker
         self.portfolio = portfolio_manager
@@ -87,11 +91,17 @@ class ExecutionEngine:
         self.stop_loss_manager = stop_loss_manager
         self.journal = journal
         self.notifier = notifier
+        self.order_flow_analyzer = order_flow_analyzer
         self.min_confidence = min_confidence
         self.max_daily_loss_pct = max_daily_loss_pct
         self.cooldown_seconds = cooldown_seconds
         self.require_confirmation = require_confirmation
         self.atr_timeframe = atr_timeframe
+
+        # Order flow config
+        of_cfg = order_flow_config or {}
+        self._of_max_wait = of_cfg.get("max_wait_seconds", 60)
+        self._of_poll_interval = of_cfg.get("poll_interval_seconds", 5)
 
         # Tracking
         self._last_trade_time: Dict[str, datetime] = {}  # ticker -> last trade time
@@ -271,6 +281,18 @@ class ExecutionEngine:
             )
             return None  # Do NOT execute — await approval
 
+        # Step 7.5: Order Flow Guard (Smart Execution Guard)
+        if self.order_flow_analyzer and hasattr(self.broker, 'get_order_book'):
+            of_result = self._order_flow_guard(ticker, order_side)
+            if of_result == "BLOCK":
+                self._log(
+                    "OBI_BLOCKED",
+                    "Order flow unfavorable — execution blocked by Smart Guard",
+                    ticker=ticker,
+                )
+                return None
+            # of_result == "EXECUTE" → proceed normally
+
         # Step 8: Execute order (only reached if require_confirmation=False)
         # Futures pre-order setup: leverage & margin mode
         position_side_param = None
@@ -306,6 +328,93 @@ class ExecutionEngine:
             self._log("PENDING", f"Order submitted: {result.order_id}", ticker=ticker)
 
         return result
+
+    # ── Order Flow Guard ──────────────────────────────────────────────
+
+    def _order_flow_guard(self, ticker: str, order_side: OrderSide) -> str:
+        """Smart Execution Guard — checks order book before execution.
+
+        Uses OrderFlowAnalyzer to determine if order flow conditions
+        are favorable for the trade. Supports polling with timeout.
+
+        Args:
+            ticker: Normalized ticker symbol
+            order_side: BUY or SELL
+
+        Returns:
+            "EXECUTE" if flow is favorable, "BLOCK" if unfavorable.
+        """
+        import time
+
+        side_str = order_side.value.lower()  # "buy" or "sell"
+
+        # First check
+        order_book = self.broker.get_order_book(ticker)
+        if not order_book or (not order_book.get("bids") and not order_book.get("asks")):
+            # No order book data → skip guard, allow execution
+            self._log("OBI_SKIP", "No order book data available — skipping guard", ticker=ticker)
+            return "EXECUTE"
+
+        signal = self.order_flow_analyzer.get_execution_signal(order_book, side_str)
+
+        if signal.action == "EXECUTE":
+            self._log(
+                "OBI_OK",
+                f"Order flow favorable: OBI={signal.obi:+.3f} | {signal.reason}",
+                ticker=ticker,
+            )
+            return "EXECUTE"
+
+        if signal.action == "BLOCK":
+            self._log(
+                "OBI_BLOCKED",
+                f"Order flow dangerous: OBI={signal.obi:+.3f} | {signal.reason}",
+                ticker=ticker,
+            )
+            return "BLOCK"
+
+        # signal.action == "WAIT" → polling loop
+        self._log(
+            "OBI_WAIT",
+            f"Order flow neutral (OBI={signal.obi:+.3f}), "
+            f"waiting up to {self._of_max_wait}s for improvement...",
+            ticker=ticker,
+        )
+
+        elapsed = 0
+        while elapsed < self._of_max_wait:
+            time.sleep(self._of_poll_interval)
+            elapsed += self._of_poll_interval
+
+            order_book = self.broker.get_order_book(ticker)
+            if not order_book or (not order_book.get("bids") and not order_book.get("asks")):
+                continue
+
+            signal = self.order_flow_analyzer.get_execution_signal(order_book, side_str)
+
+            if signal.action == "EXECUTE":
+                self._log(
+                    "OBI_OK",
+                    f"Order flow improved after {elapsed}s: OBI={signal.obi:+.3f}",
+                    ticker=ticker,
+                )
+                return "EXECUTE"
+
+            if signal.action == "BLOCK":
+                self._log(
+                    "OBI_BLOCKED",
+                    f"Order flow worsened during wait: OBI={signal.obi:+.3f}",
+                    ticker=ticker,
+                )
+                return "BLOCK"
+
+        # Timeout → treat as BLOCK (conservative)
+        self._log(
+            "OBI_TIMEOUT",
+            f"Order flow did not improve within {self._of_max_wait}s — execution skipped",
+            ticker=ticker,
+        )
+        return "BLOCK"
 
     # ── Decision Parsing ──────────────────────────────────────────────
 

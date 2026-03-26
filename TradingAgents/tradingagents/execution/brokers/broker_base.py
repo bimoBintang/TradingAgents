@@ -124,6 +124,16 @@ class BaseBroker(ABC):
         """
         ...
 
+    def get_order_book(self, ticker: str, depth: int = 20) -> Optional[dict]:
+        """Fetch Level 2 order book data for a ticker.
+
+        Returns dict with 'bids' and 'asks' lists of [price, volume] pairs,
+        or None if not supported by this broker.
+
+        Override in subclasses that support order book data (e.g., CcxtBroker).
+        """
+        return None
+
     def health_check(self) -> bool:
         """Verify broker connectivity and basic functionality.
 

@@ -449,6 +449,34 @@ class CcxtBroker(BaseBroker):
 
         return positions
 
+    # ── Order Book / Market Microstructure ─────────────────────────────
+
+    def get_order_book(self, ticker: str, depth: int = 20) -> dict:
+        """Fetch L2 order book from exchange.
+
+        Args:
+            ticker: Trading pair (e.g., 'BTC/USDT')
+            depth: Number of levels to fetch (default 20)
+
+        Returns:
+            Dict with 'bids' and 'asks' lists of [price, volume] pairs.
+            Returns empty order book on failure.
+        """
+        symbol = self._normalize_ticker(ticker)
+        try:
+            book = with_retry(
+                lambda: self.exchange.fetch_order_book(symbol, limit=depth),
+                config=self._retry_config,
+                operation_name=f"fetch_order_book({symbol})",
+            )
+            return {
+                "bids": book.get("bids", [])[:depth],
+                "asks": book.get("asks", [])[:depth],
+            }
+        except Exception as e:
+            logger.warning("[CcxtBroker] fetch_order_book failed for %s: %s", symbol, e)
+            return {"bids": [], "asks": []}
+
     # ── Futures-Specific Methods ─────────────────────────────────────
 
     def set_leverage(self, symbol: str, leverage: int) -> bool:

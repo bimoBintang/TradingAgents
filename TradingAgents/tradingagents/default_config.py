@@ -133,5 +133,15 @@ DEFAULT_CONFIG = {
         "poll_interval_seconds": 30,                     # Price polling interval
         "auto_exit_enabled": True,                       # Auto-trigger stop-loss exits
     },
+    # ── Order Flow / Market Microstructure ─────────────────────────────
+    "order_flow": {
+        "enabled": False,                                # Disabled by default (backward-compatible)
+        "obi_execute_threshold": 0.15,                   # OBI ≥ this → immediate execution
+        "obi_block_threshold": -0.30,                    # OBI ≤ this → block execution
+        "order_book_depth": 20,                          # Levels of order book to analyze
+        "max_wait_seconds": 60,                          # Max wait for favorable OBI
+        "poll_interval_seconds": 5,                      # OBI re-check interval during wait
+        "wall_detection_usd": 100000,                    # Threshold (USD) for wall detection
+    },
 }
 

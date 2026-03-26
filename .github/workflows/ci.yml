@@ -41,3 +41,6 @@ jobs:
 
       - name: Run Refinement Tests
         run: uv run pytest tradingagents/execution/tests/test_refinement.py -v
+
+      - name: Run Order Flow Tests
+        run: uv run pytest tradingagents/execution/tests/test_order_flow.py -v
