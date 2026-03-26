@@ -189,9 +189,19 @@ export const SystemSettingsPage: React.FC = () => {
 
              <Card className="bg-slate-900/50 border-slate-800">
                <CardHeader className="py-5 border-b border-slate-800/50">
-                 <CardTitle className="text-base flex items-center gap-2">
-                   <Monitor className="text-blue-400" /> Connect Broker or Exchange
-                 </CardTitle>
+                 <div className="flex items-center justify-between">
+                   <CardTitle className="text-base flex items-center gap-2">
+                     <Monitor className="text-blue-400" /> Connect Broker or Exchange
+                   </CardTitle>
+                   <span className={cx(
+                     "px-3 py-1 rounded-full text-xs font-bold",
+                     execution.broker === "paper" || !execution.exchange
+                       ? "bg-amber-500/20 text-amber-400"
+                       : "bg-emerald-500/20 text-emerald-400"
+                   )}>
+                     {execution.broker === "paper" || !execution.exchange ? "📄 PAPER MODE" : `⚡ LIVE — ${(execution.exchange ?? '').toUpperCase()}`}
+                   </span>
+                 </div>
                </CardHeader>
                <CardContent className="p-6 flex flex-col gap-8">
                   
@@ -208,7 +218,7 @@ export const SystemSettingsPage: React.FC = () => {
                         { id: 'kraken',   label: 'Kraken',   abbr: 'KR', color: 'text-purple-400', bg: 'bg-purple-500/10' },
                         { id: 'gateio',   label: 'Gate.io',  abbr: 'GT', color: 'text-cyan-400',   bg: 'bg-cyan-500/10' },
                       ].map(ex => {
-                        const isSelected = (execution.exchange ?? 'binance') === ex.id && execution.broker !== 'alpaca';
+                        const isSelected = execution.exchange === ex.id && execution.broker !== 'alpaca';
                         return (
                           <button
                             key={ex.id}
