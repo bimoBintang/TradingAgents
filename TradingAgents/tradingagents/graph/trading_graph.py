@@ -375,6 +375,38 @@ class TradingAgentsGraph:
 
         return kwargs
 
+    def _build_market_context(self) -> str:
+        """Build dynamic market context string from config.
+
+        Returns a system-level instruction block that agents MUST follow,
+        ensuring prompts align with actual client config (spot vs futures).
+        """
+        exec_cfg = self.config.get("execution", {})
+        market_type = exec_cfg.get("market_type", "spot")
+        max_leverage = exec_cfg.get("max_leverage", 10)
+
+        if market_type == "future":
+            return (
+                "⚙️ SYSTEM RULE — FUTURES MODE ACTIVE\n"
+                f"You are trading on a FUTURES market (USDT-Margined Perpetual).\n"
+                f"• Maximum allowed leverage: {max_leverage}x\n"
+                "• You CAN open LONG or SHORT positions.\n"
+                "• Choose leverage based on conviction: 1-3x (low), 5-10x (moderate), "
+                f"10-{max_leverage}x (aggressive). Never exceed {max_leverage}x.\n"
+                "• Default to 'isolated' margin. Use 'cross' only for hedged positions.\n"
+                "• Higher leverage → smaller quantity_pct to manage risk.\n"
+                "• Always consider funding rate and liquidation distance."
+            )
+        else:
+            return (
+                "⚙️ SYSTEM RULE — SPOT MODE ACTIVE\n"
+                "You are trading on a SPOT market.\n"
+                "• You MUST set leverage to 1 (no leverage allowed).\n"
+                "• You MUST set position_side to 'LONG' (shorting not available on spot).\n"
+                "• You MUST set margin_type to 'isolated'.\n"
+                "• Do NOT attempt to short sell on spot markets."
+            )
+
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
         return {
@@ -466,12 +498,16 @@ class TradingAgentsGraph:
         portfolio_context = self.portfolio_manager.get_portfolio_context_string()
         trade_history_context = self.portfolio_manager.get_trade_summary()
 
-        # Initialize state with portfolio context
+        # Generate dynamic market context from config
+        market_context = self._build_market_context()
+
+        # Initialize state with portfolio + market context
         init_agent_state = self.propagator.create_initial_state(
             company_name,
             trade_date,
             portfolio_context=portfolio_context,
             trade_history_context=trade_history_context,
+            market_context=market_context,
         )
         args = self.propagator.get_graph_args()
 

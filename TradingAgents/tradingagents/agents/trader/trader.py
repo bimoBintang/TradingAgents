@@ -43,6 +43,8 @@ Futures Trading Guidelines:
 - Higher leverage = smaller quantity_pct (auto-adjusted by risk controller)
 - If trading spot, set leverage=1, position_side="LONG", margin_type="isolated"
 
+{market_context}
+
 Always set stop_loss_pct (e.g. 0.03-0.08) and take_profit_pct for actionable trades. Ensure risk_reward_ratio > 1.5 for good trade quality.
 
 Consider the current portfolio state when making decisions. If you already have a large position, consider that in your sizing. Do not over-allocate.
@@ -86,9 +88,15 @@ def create_trader(llm, memory):
         else:
             portfolio_context = "No portfolio information available. Assume default $10,000 paper portfolio."
 
+        # Build market context (dynamic spot/futures rules from config)
+        market_context = state.get("market_context", "")
+        if not market_context:
+            market_context = "No market context available. Default to spot trading rules."
+
         system_prompt = TRADER_SYSTEM_PROMPT.format(
             past_memories=past_memory_str,
             portfolio_context=portfolio_context,
+            market_context=market_context,
         )
 
         context = {

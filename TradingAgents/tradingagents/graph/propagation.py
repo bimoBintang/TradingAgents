@@ -18,6 +18,7 @@ class Propagator:
     def create_initial_state(
         self, company_name: str, trade_date: str,
         portfolio_context: str = "", trade_history_context: str = "",
+        market_context: str = "",
     ) -> Dict[str, Any]:
         """Create the initial state for the agent graph.
         
@@ -26,6 +27,7 @@ class Propagator:
             trade_date: Date string for the trading analysis
             portfolio_context: Portfolio state string for agent context injection
             trade_history_context: Recent trade history summary
+            market_context: Dynamic market rules (spot/futures, leverage limits)
         """
         return {
             "messages": [("human", company_name)],
@@ -67,6 +69,8 @@ class Propagator:
             "macro_geo_report": "",
             "correlation_report": "",
             "execution_strategy": "",
+            # Dynamic market context
+            "market_context": market_context,
         }
 
     def get_graph_args(self, callbacks: Optional[List] = None) -> Dict[str, Any]:

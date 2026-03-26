@@ -89,3 +89,6 @@ class AgentState(MessagesState):
     # Phase 14: Prediction market signals
     prediction_market_report: Annotated[str, "Report from the Prediction Market Analyst (Polymarket)"]
 
+    # Market context — dynamic rules injected from config (spot vs futures)
+    market_context: Annotated[str, "Dynamic market rules (spot/futures, leverage limits) from config"]
+
