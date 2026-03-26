@@ -79,15 +79,28 @@ def init_graph(config: Optional[Dict[str, Any]] = None):
 
     startup_config = DEFAULT_CONFIG.copy()
 
-    # In Multi-Tenant SaaS, the global singleton graph shouldn't load single-user API keys
-    # from the legacy local JSON file. It should use the clean DEFAULT_CONFIG.
-    # Per-user configurations are dynamically loaded from DB during task execution instead.
-    
+    # Load persistent config if exists (legacy fallback)
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                saved_config = json.load(f)
+            startup_config = deep_merge(startup_config, saved_config)
+            logger.info("Loaded persistent agent config from %s", CONFIG_PATH)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to read persistent config, falling back to defaults: %s", e)
+
     # Allow env-var overrides for common settings
     if os.getenv("EXECUTION_MODE"):
         startup_config.setdefault("execution", {})["mode"] = os.getenv("EXECUTION_MODE")
     if os.getenv("EXECUTION_BROKER"):
         startup_config.setdefault("execution", {})["broker"] = os.getenv("EXECUTION_BROKER")
+
+    # ── SaaS: Global singleton ALWAYS uses paper broker ──────────────
+    # Real broker instances are created per-user in background tasks
+    # via get_user_config() auto-upgrade logic. This ensures the server
+    # ALWAYS starts instantly without any exchange network calls.
+    startup_config.setdefault("execution", {})["broker"] = "paper"
+    startup_config.setdefault("execution", {})["mode"] = "paper"
 
     _config = startup_config
     _start_time = time.time()

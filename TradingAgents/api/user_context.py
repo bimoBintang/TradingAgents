@@ -73,6 +73,23 @@ def get_user_config(db: Session, user_id: int) -> dict:
     if uc.encrypted_password:
         exec_block["password"] = decrypt(uc.encrypted_password)
 
+    # ── Auto-upgrade: paper → live jika user sudah punya API key ──
+    has_api_key = bool(exec_block.get("api_key"))
+    has_api_secret = bool(exec_block.get("api_secret"))
+    has_exchange = bool(exec_block.get("exchange"))
+
+    if has_api_key and has_api_secret and has_exchange:
+        # User sudah mengisi kredensial → upgrade ke live
+        if exec_block.get("broker") == "paper":
+            exec_block["broker"] = "ccxt"
+            logger.info("Auto-upgrade user %d to CCXT live (%s)", user_id, exec_block.get("exchange"))
+        if exec_block.get("mode") == "paper":
+            exec_block["mode"] = "live"
+    else:
+        # Belum ada key → pastikan tetap paper (safety net)
+        exec_block["broker"] = "paper"
+        exec_block["mode"] = "paper"
+
     return merged
 
 

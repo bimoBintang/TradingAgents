@@ -48,12 +48,12 @@ DEFAULT_CONFIG = {
     },
     # ── Execution Configuration (Phase 3: Broker Integration) ──────────
     "execution": {
-        "mode": "live",                       # disabled | paper | live
-        "broker": "ccxt",                    # paper | ccxt | alpaca
+        "mode": "paper",                     # disabled | paper | live
+        "broker": "paper",                   # paper | ccxt | alpaca
         # Broker-specific settings
-        "exchange": "bybit",               # Changed to bybit to avoid ISP blocks
-        "api_key": "",                       # Loaded from BINANCE_API_KEY env var
-        "api_secret": "",                    # Loaded from BINANCE_API_SECRET env var
+        "exchange": None,                    # None until user selects: binance, bybit, okx, etc.
+        "api_key": "",                       # Set by user via Dashboard
+        "api_secret": "",                    # Set by user via Dashboard
         "password": "",                      # Some exchanges require passphrase (e.g., OKX)
         "sandbox": False,                    # False = REAL account
         "quote_currency": "USDT",            # Default quote currency for CCXT
