@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { cx } from '../utils/cx';
-import { Key, Bell, Shield, Brain, Monitor, CheckCircle2, AlertCircle, Loader2, Save, Zap, Cpu, Server, Settings2, Send, Activity, TrendingDown, Calendar, Clock, MessageSquare } from 'lucide-react';
+import { Key, Bell, Shield, Brain, Monitor, CheckCircle2, AlertCircle, Loader2, Save, Zap, Cpu, Server, Settings2, Send, Activity, TrendingDown, Calendar, Clock, MessageSquare, Target } from 'lucide-react';
 import { useConfig } from '../hooks/useApi';
 import { api } from '../services/api';
 
@@ -97,6 +97,7 @@ export const SystemSettingsPage: React.FC = () => {
   }
 
   const execution = localConfig.execution ?? {};
+  const order_flow = localConfig.order_flow ?? {};
   const notifications = localConfig.notifications ?? {};
 
 
@@ -108,6 +109,7 @@ export const SystemSettingsPage: React.FC = () => {
         <CardContent className="p-3 flex flex-col gap-1">
           {[
             { id: 'api', icon: Key, label: 'API Management' },
+            { id: 'execution', icon: Activity, label: 'Execution & Order Flow' },
             { id: 'ai_models', icon: Brain, label: 'AI Language Models' },
             { id: 'alerts', icon: Bell, label: 'Alerts & Notifications' },
           ].map(item => (
@@ -348,6 +350,146 @@ export const SystemSettingsPage: React.FC = () => {
 
                </CardContent>
              </Card>
+          </div>
+        )}
+
+        {/* VIEW: EXECUTION & ORDER FLOW */}
+        {activeMenu === 'execution' && (
+          <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+             
+             {/* Smart Execution Guard Master Switch */}
+             <Card className={cx("border transition-colors duration-300", order_flow.enabled ? "bg-emerald-950/20 border-emerald-900/50" : "bg-slate-900/50 border-slate-800")}>
+               <CardContent className="p-6">
+                 <div className="flex flex-col md:flex-row justify-between gap-6">
+                   <div className="flex gap-4">
+                     <div className={cx("mt-1 w-12 h-12 rounded-xl flex items-center justify-center shrink-0 shadow-inner", order_flow.enabled ? "bg-emerald-500/20 shadow-emerald-500/10" : "bg-slate-800/50")}>
+                       <Shield className={order_flow.enabled ? "text-emerald-400" : "text-slate-500"} size={26} />
+                     </div>
+                     <div>
+                       <h3 className={cx("text-xl font-bold mb-1", order_flow.enabled ? "text-emerald-400" : "text-slate-200")}>
+                         Smart Execution Guard (Sniper)
+                       </h3>
+                       <p className="text-sm text-slate-400 max-w-2xl leading-relaxed">
+                         When enabled, the execution engine acts as a sniper. Before placing any order to Binance/Bybit, it fetches the real-time Order Book (L2 data) to calculate the <strong>Order Book Imbalance (OBI)</strong> and detect institutional walls. It will <strong>BLOCK</strong> trades permanently if the order flow is highly dangerous, or <strong>WAIT (Poll)</strong> if it is neutral.
+                       </p>
+                     </div>
+                   </div>
+                   <div className="flex items-center shrink-0">
+                     <Toggle enabled={!!order_flow.enabled} onChange={(v) => setNestedValue('order_flow.enabled', v)} />
+                   </div>
+                 </div>
+               </CardContent>
+             </Card>
+
+             {/* Order Book Imbalance Settings */}
+             <div className={cx("flex flex-col gap-6 transition-all duration-500", order_flow.enabled ? "opacity-100" : "opacity-30 pointer-events-none")}>
+               
+               <Card className="bg-slate-900/50 border-slate-800">
+                 <CardHeader className="py-5 border-b border-slate-800/50">
+                   <CardTitle className="text-base flex items-center gap-2 text-slate-200">
+                     <Activity className="text-blue-400" size={18} /> Order Book Imbalance (OBI) Thresholds
+                   </CardTitle>
+                 </CardHeader>
+                 <CardContent className="p-6">
+                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                     
+                     <div className="flex flex-col gap-4">
+                       <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                         <span>Execute Threshold</span>
+                         <span className="text-emerald-400 font-mono font-bold">
+                           +{order_flow.obi_execute_threshold ?? 0.3}
+                         </span>
+                       </label>
+                       <p className="text-xs text-slate-500 leading-relaxed -mt-2">
+                         Minimum positive OBI required to execute a trade instantly. <span className="text-emerald-400 bg-emerald-500/10 px-1 rounded">Default: +0.3</span> (Strong buy pressure).
+                       </p>
+                       <input 
+                         type="range" min="0" max="0.9" step="0.05"
+                         value={order_flow.obi_execute_threshold ?? 0.3}
+                         onChange={(e) => setNestedValue('order_flow.obi_execute_threshold', parseFloat(e.target.value))}
+                         className="w-full accent-emerald-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                       />
+                     </div>
+
+                     <div className="flex flex-col gap-4">
+                       <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                         <span>Block (Cancel) Threshold</span>
+                         <span className="text-rose-400 font-mono font-bold">
+                           -{order_flow.obi_block_threshold ?? 0.3}
+                         </span>
+                       </label>
+                       <p className="text-xs text-slate-500 leading-relaxed -mt-2">
+                         Maximum negative OBI before the trade is canceled. <span className="text-rose-400 bg-rose-500/10 px-1 rounded">Default: -0.3</span> (Strong sell pressure).
+                       </p>
+                       <input 
+                         type="range" min="0" max="0.9" step="0.05"
+                         value={order_flow.obi_block_threshold ?? 0.3}
+                         onChange={(e) => setNestedValue('order_flow.obi_block_threshold', parseFloat(e.target.value))}
+                         className="w-full accent-rose-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                       />
+                     </div>
+
+                   </div>
+                 </CardContent>
+               </Card>
+
+               {/* Advanced Guard Settings */}
+               <Card className="bg-slate-900/50 border-slate-800">
+                 <CardHeader className="py-5 border-b border-slate-800/50">
+                   <CardTitle className="text-base flex items-center gap-2 text-slate-200">
+                     <Target className="text-amber-400" size={18} /> Wall Detection & Polling Overrides
+                   </CardTitle>
+                 </CardHeader>
+                 <CardContent className="p-6">
+                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                     
+                     <div className="flex flex-col gap-2">
+                       <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Wall Size Threshold (USD)</label>
+                       <p className="text-xs text-slate-500 mb-2 h-10">
+                         Dollar value required at a single price level to be considered an institutional wall.
+                       </p>
+                       <input 
+                         type="number" step="100000"
+                         value={order_flow.wall_detection_usd ?? 500000}
+                         onChange={(e) => setNestedValue('order_flow.wall_detection_usd', parseInt(e.target.value))}
+                         className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 font-mono"
+                       />
+                     </div>
+
+                     <div className="flex flex-col gap-2">
+                       <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Poll Max Wait (Secs)</label>
+                       <p className="text-xs text-slate-500 mb-2 h-10">
+                         How long to wait & keep polling if the order book flow is currently neutral.
+                       </p>
+                       <input 
+                         type="number" step="10"
+                         value={order_flow.max_wait_seconds ?? 180}
+                         onChange={(e) => setNestedValue('order_flow.max_wait_seconds', parseInt(e.target.value))}
+                         className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 font-mono"
+                       />
+                     </div>
+
+                     <div className="flex flex-col gap-2">
+                       <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Order Book Depth</label>
+                       <p className="text-xs text-slate-500 mb-2 h-10">
+                         Levels to fetch from exchange (higher = wider lookahead but slower API limits).
+                       </p>
+                       <select 
+                         value={order_flow.order_book_depth ?? 20}
+                         onChange={(e) => setNestedValue('order_flow.order_book_depth', parseInt(e.target.value))}
+                         className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 font-mono"
+                       >
+                         <option value="10">10 Levels (Shallow)</option>
+                         <option value="20">20 Levels (Optimal)</option>
+                         <option value="50">50 Levels (Deep)</option>
+                         <option value="100">100 Levels (Extremely Deep)</option>
+                       </select>
+                     </div>
+
+                   </div>
+                 </CardContent>
+               </Card>
+             </div>
           </div>
         )}
 
