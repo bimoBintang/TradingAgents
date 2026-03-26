@@ -57,6 +57,7 @@ from tradingagents.execution.portfolio_manager import PortfolioManager
 from tradingagents.execution.position_tracker import PositionTracker
 # Phase 3: Broker integration and execution
 from tradingagents.execution.execution_engine import ExecutionEngine
+from tradingagents.execution.order_flow import OrderFlowAnalyzer
 from tradingagents.execution.retry import RetryConfig
 from tradingagents.execution.risk_controls import RiskController
 from tradingagents.execution.stop_loss_manager import StopLossManager
@@ -297,6 +298,13 @@ class TradingAgentsGraph:
             from tradingagents.notifications.notifier import Notifier
             self.notifier = Notifier(self.config)
 
+            # Order Flow Analyzer
+            order_flow_cfg = self.config.get("order_flow", {})
+            if order_flow_cfg.get("enabled", False):
+                self.order_flow_analyzer = OrderFlowAnalyzer(order_flow_cfg)
+            else:
+                self.order_flow_analyzer = None
+
             self.execution_engine = ExecutionEngine(
                 broker=self.broker,
                 portfolio_manager=self.portfolio_manager,
@@ -305,11 +313,13 @@ class TradingAgentsGraph:
                 stop_loss_manager=self.stop_loss_manager,
                 journal=self.journal,
                 notifier=self.notifier,
+                order_flow_analyzer=self.order_flow_analyzer,
                 min_confidence=exec_cfg.get("min_confidence", 0.5),
                 max_daily_loss_pct=exec_cfg.get("max_daily_loss_pct", 0.05),
                 cooldown_seconds=exec_cfg.get("cooldown_seconds", 300),
                 require_confirmation=exec_cfg.get("require_confirmation", True),
                 atr_timeframe=exec_cfg.get("atr_timeframe", "1h"),
+                order_flow_config=order_flow_cfg,
             )
 
             # Phase 5b: Reconcile local portfolio with exchange on startup
