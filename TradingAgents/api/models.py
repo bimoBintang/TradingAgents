@@ -16,6 +16,39 @@ class User(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     portfolio = relationship("PortfolioState", back_populates="user", uselist=False)
+    user_config = relationship("UserConfig", back_populates="user", uselist=False)
+
+
+class UserConfig(Base):
+    """Per-user configuration for multi-tenant isolation.
+
+    Stores all runtime settings (execution, risk_controls, order_flow, etc.)
+    as a JSON blob. API credentials are stored separately in encrypted columns
+    and NEVER appear inside config_json.
+    """
+    __tablename__ = "user_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+
+    # JSON blob — all config EXCEPT credentials
+    config_json = Column(Text, nullable=False, default="{}")
+
+    # Encrypted credentials (Fernet) — never plaintext
+    encrypted_api_key = Column(String, default="")
+    encrypted_api_secret = Column(String, default="")
+    encrypted_password = Column(String, default="")  # OKX / KuCoin passphrase
+
+    # Schema versioning — bumped when DEFAULT_CONFIG adds new required fields
+    config_version = Column(Integer, default=1)
+
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", back_populates="user_config")
 
 class PortfolioState(Base):
     __tablename__ = "portfolio_state"

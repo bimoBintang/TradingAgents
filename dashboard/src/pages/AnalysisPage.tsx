@@ -171,8 +171,17 @@ export const AnalysisPage: React.FC = () => {
             </div>
 
             {error && (
-              <div className="mt-3 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-mono">
-                {error}
+              <div className="mt-3 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
+                {error.includes("Could not resolve authentication method") || error.includes("api_key") ? (
+                  <div className="flex flex-col gap-1">
+                    <strong className="flex items-center gap-1.5 text-sm"><AlertTriangle size={14}/> Missing API Key</strong>
+                    <span className="opacity-90 leading-relaxed font-sans">
+                      The AI Provider's API Key is not configured. Please go to <b>System Settings &rarr; AI Language Models</b> to add your API Key before running an analysis.
+                    </span>
+                  </div>
+                ) : (
+                  <span className="font-mono">{error}</span>
+                )}
               </div>
             )}
           </CardContent>

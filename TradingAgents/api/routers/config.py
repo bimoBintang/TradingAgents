@@ -1,13 +1,18 @@
-"""Config endpoints — read and update runtime configuration."""
+"""Config endpoints — read and update runtime configuration (per-user).
 
-import os
-import json
+Multi-tenant: each user's config is stored in the `user_configs` table.
+API credentials are encrypted via Fernet and never stored in config_json.
+"""
+
 import logging
-from pathlib import Path
 from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 
 from api.schemas import ConfigResponse, ConfigUpdateRequest
-from api.dependencies import get_config, CONFIG_PATH
+from api.auth import get_current_user
+from api.database import get_db
+from api.models import User
+from api.user_context import get_user_config, save_user_config
 from tradingagents.default_config import DEFAULT_CONFIG
 
 logger = logging.getLogger("api.routers.config")
@@ -15,73 +20,55 @@ router = APIRouter(prefix="/api", tags=["Config"])
 
 SENSITIVE_KEYS = {"api_key", "api_secret", "password", "telegram_bot_token"}
 
-def filter_secrets(d: dict) -> dict:
-    """Recursively remove sensitive keys before writing to disk."""
-    import copy
-    result = copy.deepcopy(d)
-    for key, value in list(result.items()):
-        if key in SENSITIVE_KEYS:
-            del result[key]
-        elif isinstance(value, dict):
-            result[key] = filter_secrets(value)
-    return result
 
 @router.get("/config", response_model=ConfigResponse)
-async def read_config(config=Depends(get_config)):
-    """Return the current runtime config (sanitised — secrets masked)."""
+async def read_config(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the authenticated user's runtime config (secrets masked)."""
+    config = get_user_config(db, user.id)
     safe = _sanitise(config)
     return ConfigResponse(config=safe)
 
 
 @router.put("/config", response_model=ConfigResponse)
-async def update_config(body: ConfigUpdateRequest, config=Depends(get_config)):
-    """Merge partial updates into the live config and persist to disk.
-    
-    Uses an atomic file write to prevent corruption.
+async def update_config(
+    body: ConfigUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Merge partial updates into the user's config and persist to DB.
+
+    Credentials are encrypted before storage. Other fields are
+    deep-merged into the existing config_json.
     """
-    for key, value in body.updates.items():
-        if isinstance(value, dict) and isinstance(config.get(key), dict):
-            config[key].update(value)
-        else:
-            config[key] = value
+    save_user_config(db, user.id, body.updates)
 
-    # Persist securely and atomically
-    try:
-        data_dir = CONFIG_PATH.parent
-        data_dir.mkdir(parents=True, exist_ok=True)
-        
-        safe_to_save = filter_secrets(config)
-        tmp_path = data_dir / "agent_config.tmp.json"
-        
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(safe_to_save, f, indent=2)
-            
-        os.replace(tmp_path, CONFIG_PATH)
-    except OSError as e:
-        logger.error("Failed to persist config to disk: %s", e)
-        # We don't fail the request if persistent write fails, since memory is updated.
-
+    # Return updated config
+    config = get_user_config(db, user.id)
     safe = _sanitise(config)
     return ConfigResponse(config=safe)
 
 
 @router.delete("/config/reset", response_model=ConfigResponse)
-async def reset_config(config=Depends(get_config)):
-    """Delete the persistent config and restore factory defaults in-memory."""
+async def reset_config(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Reset the user's config to factory defaults."""
     import copy
-    
-    # 1. Reset memory config
-    config.clear()
-    config.update(copy.deepcopy(DEFAULT_CONFIG))
-    
-    # 2. Delete file
-    try:
-        if CONFIG_PATH.exists():
-            CONFIG_PATH.unlink()
-    except OSError as e:
-        logger.error("Failed to delete config file: %s", e)
-        
-    safe = _sanitise(config)
+    from api.models import UserConfig
+
+    uc = db.query(UserConfig).filter(UserConfig.user_id == user.id).first()
+    if uc:
+        uc.config_json = "{}"
+        uc.encrypted_api_key = ""
+        uc.encrypted_api_secret = ""
+        uc.encrypted_password = ""
+        db.commit()
+
+    safe = _sanitise(copy.deepcopy(DEFAULT_CONFIG))
     return ConfigResponse(config=safe)
 
 

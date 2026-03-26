@@ -92,3 +92,6 @@ class AgentState(MessagesState):
     # Market context — dynamic rules injected from config (spot vs futures)
     market_context: Annotated[str, "Dynamic market rules (spot/futures, leverage limits) from config"]
 
+    # Multi-tenant context (SaaS isolation)
+    user_id: Annotated[int, "Authenticated user ID for tenant isolation"]
+    user_config: Annotated[dict, "User-specific runtime configuration loaded from database"]

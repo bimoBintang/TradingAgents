@@ -51,38 +51,56 @@ def get_user_analysis_results(user_id: int) -> Dict[str, Dict[str, Any]]:
     return _analysis_results[user_id]
 
 
-def init_graph():
-    """Initialise the TradingAgentsGraph once and return it.
+def init_graph(config: Optional[Dict[str, Any]] = None):
+    """Initialise a TradingAgentsGraph and return it.
 
-    If initialisation fails (e.g. missing API keys), the server
-    still starts but endpoints will return 503.
+    If *config* is provided (per-user), creates a NEW non-singleton graph
+    for that specific user's analysis task.
+
+    If *config* is None, returns the global singleton graph (created on
+    first call with DEFAULT_CONFIG for health-check / status endpoints).
     """
     global _graph, _config, _start_time, _init_error
 
-    config = DEFAULT_CONFIG.copy()
+    # ── Per-user graph (non-singleton) ────────────────────────────────
+    if config is not None:
+        try:
+            from tradingagents.graph.trading_graph import TradingAgentsGraph
+            user_graph = TradingAgentsGraph(debug=False, config=config)
+            logger.info("Created per-user graph — session %s", user_graph.session_id)
+            return user_graph
+        except Exception as e:
+            logger.error("Per-user graph init failed: %s", e)
+            raise
 
-    # Load persistent config if exists
+    # ── Global singleton (startup / health-check) ─────────────────────
+    if _graph is not None:
+        return _graph
+
+    startup_config = DEFAULT_CONFIG.copy()
+
+    # Load persistent config if exists (legacy fallback)
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 saved_config = json.load(f)
-            config = deep_merge(config, saved_config)
+            startup_config = deep_merge(startup_config, saved_config)
             logger.info("Loaded persistent agent config from %s", CONFIG_PATH)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to read persistent config, falling back to defaults: %s", e)
 
     # Allow env-var overrides for common settings
     if os.getenv("EXECUTION_MODE"):
-        config.setdefault("execution", {})["mode"] = os.getenv("EXECUTION_MODE")
+        startup_config.setdefault("execution", {})["mode"] = os.getenv("EXECUTION_MODE")
     if os.getenv("EXECUTION_BROKER"):
-        config.setdefault("execution", {})["broker"] = os.getenv("EXECUTION_BROKER")
+        startup_config.setdefault("execution", {})["broker"] = os.getenv("EXECUTION_BROKER")
 
-    _config = config
+    _config = startup_config
     _start_time = time.time()
 
     try:
         from tradingagents.graph.trading_graph import TradingAgentsGraph
-        _graph = TradingAgentsGraph(debug=False, config=config)
+        _graph = TradingAgentsGraph(debug=False, config=startup_config)
         
         try:
             from api.db_sync import load_graph_from_db

@@ -29,9 +29,13 @@ def _do_analysis(task_id: str, user_id: int, ticker: str, trade_date: str, auto_
         try:
             from api.dependencies import init_graph
             from tradingagents.graph.trading_graph import TradingAgentsGraph
+            from api.user_context import get_user_config
 
-            # Get or create graph
-            graph = init_graph()
+            # ── Multi-tenant: load user-specific config ──
+            user_config = get_user_config(db, user_id)
+
+            # Get or create graph with user-specific config
+            graph = init_graph(config=user_config)
             if graph is None:
                 raise RuntimeError("TradingAgentsGraph not available")
 

@@ -51,6 +51,50 @@ class ConfigUpdateRequest(BaseModel):
     )
 
 
+class ExecutionConfigUpdate(BaseModel):
+    """Validated sub-schema for execution config fields."""
+    mode: Optional[str] = Field(None, pattern=r"^(disabled|paper|live)$")
+    broker: Optional[str] = Field(None, pattern=r"^(paper|ccxt|alpaca)$")
+    exchange: Optional[str] = None
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
+    password: Optional[str] = None
+    market_type: Optional[str] = Field(None, pattern=r"^(spot|future)$")
+    margin_type: Optional[str] = Field(None, pattern=r"^(isolated|cross)$")
+    max_leverage: Optional[int] = Field(None, ge=1, le=125)
+    min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    require_confirmation: Optional[bool] = None
+    quote_currency: Optional[str] = None
+    sandbox: Optional[bool] = None
+    cooldown_seconds: Optional[int] = Field(None, ge=0, le=86400)
+    max_daily_loss_pct: Optional[float] = Field(None, ge=0.01, le=0.5)
+
+
+class RiskControlsUpdate(BaseModel):
+    """Validated sub-schema for risk_controls config fields."""
+    kill_switch_enabled: Optional[bool] = None
+    max_daily_loss_pct: Optional[float] = Field(None, ge=0.01, le=0.5)
+    max_weekly_loss_pct: Optional[float] = Field(None, ge=0.02, le=1.0)
+    max_position_pct: Optional[float] = Field(None, ge=0.01, le=1.0)
+    max_concurrent_positions: Optional[int] = Field(None, ge=1, le=50)
+    trailing_stop_pct: Optional[float] = Field(None, ge=0.0, le=1.0)
+    atr_multiplier: Optional[float] = Field(None, ge=0.1, le=10.0)
+    max_hold_hours: Optional[int] = Field(None, ge=1, le=720)
+    consecutive_loss_limit: Optional[int] = Field(None, ge=1, le=20)
+    cooldown_seconds: Optional[int] = Field(None, ge=0, le=86400)
+
+
+class OrderFlowUpdate(BaseModel):
+    """Validated sub-schema for order_flow config fields."""
+    enabled: Optional[bool] = None
+    obi_execute_threshold: Optional[float] = Field(None, ge=0.0, le=0.9)
+    obi_block_threshold: Optional[float] = Field(None, ge=0.0, le=0.9)
+    order_book_depth: Optional[int] = Field(None, ge=5, le=100)
+    max_wait_seconds: Optional[int] = Field(None, ge=10, le=600)
+    poll_interval_seconds: Optional[int] = Field(None, ge=1, le=60)
+    wall_detection_usd: Optional[int] = Field(None, ge=10000, le=10000000)
+
+
 # ── Response Models ───────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

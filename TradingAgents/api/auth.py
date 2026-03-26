@@ -94,12 +94,17 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
             is_admin=True # Set first incoming user to Admin for ease of development migration
         )
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        db.flush()  # Flush so user.id is available for FK relations
+
+        # Auto-create default UserConfig (multi-tenant isolation)
+        from api.user_context import ensure_user_config, ensure_portfolio
+        ensure_user_config(db, user)
 
         # Auto-create default portfolio for new user
-        from api.user_context import ensure_portfolio
         ensure_portfolio(db, user)
+
+        db.commit()  # Single atomic commit: User + UserConfig + Portfolio
+        db.refresh(user)
         
     return user
 

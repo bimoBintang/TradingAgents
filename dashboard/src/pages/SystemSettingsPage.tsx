@@ -644,6 +644,110 @@ export const SystemSettingsPage: React.FC = () => {
                 </div>
               </CardContent>
             </Card>
+            {/* Kill Switch (Per-User — Multi-Tenant Safe) */}
+            <Card className="bg-slate-900/50 border-slate-800 relative overflow-hidden">
+              {risk_controls.kill_switch_enabled && (
+                <div className="absolute top-0 left-0 right-0 h-1 bg-linear-to-r from-rose-500 via-rose-400 to-rose-500 animate-pulse"></div>
+              )}
+              <CardHeader className="py-5 border-b border-slate-800/50">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base flex items-center gap-2 text-slate-200">
+                    <ShieldAlert className="text-rose-400" size={18} /> Automated Kill Switch
+                  </CardTitle>
+                  <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                    Per-User Isolated
+                  </span>
+                </div>
+              </CardHeader>
+              <CardContent className="p-6">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Kill Switch</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      Automatically halt all trading when daily or weekly loss limits are breached. Only affects YOUR account.
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <Toggle 
+                        enabled={risk_controls.kill_switch_enabled ?? true}
+                        onChange={(v) => setNestedValue('risk_controls.kill_switch_enabled', v)} 
+                      />
+                      <span className={cx("text-sm font-bold", risk_controls.kill_switch_enabled ? "text-rose-400" : "text-slate-500")}>
+                        {risk_controls.kill_switch_enabled ? 'ARMED' : 'Disabled'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Consecutive Loss Limit</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      Enter cooldown mode after this many consecutive losing trades.
+                    </p>
+                    <input 
+                      type="number" step="1" min="1" max="20"
+                      value={risk_controls.consecutive_loss_limit ?? 3}
+                      onChange={(e) => setNestedValue('risk_controls.consecutive_loss_limit', parseInt(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-rose-500 font-mono"
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Drawdown Limits */}
+            <Card className="bg-slate-900/50 border-slate-800">
+              <CardHeader className="py-5 border-b border-slate-800/50">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base flex items-center gap-2 text-slate-200">
+                    <TrendingDown className="text-amber-400" size={18} /> Drawdown Limits
+                  </CardTitle>
+                  <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                    Per-User Isolated
+                  </span>
+                </div>
+              </CardHeader>
+              <CardContent className="p-6">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Max Daily Loss (%)</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      If your daily loss exceeds this threshold, the kill switch activates and all trading halts for the day.
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <input 
+                        type="number" step="0.01" min="0.01" max="0.5"
+                        value={risk_controls.max_daily_loss_pct ?? 0.05}
+                        onChange={(e) => setNestedValue('risk_controls.max_daily_loss_pct', parseFloat(e.target.value))}
+                        className="flex-1 bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-amber-500 font-mono"
+                      />
+                      <span className="bg-slate-800 px-3 py-3 rounded-xl border border-slate-700 font-mono text-sm text-amber-400 w-16 text-center">
+                        {Math.round((risk_controls.max_daily_loss_pct ?? 0.05) * 100)}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Max Weekly Loss (%)</label>
+                    <p className="text-xs text-slate-500 mb-2 h-10">
+                      Cumulative weekly loss limit. The kill switch activates if this threshold is breached.
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <input 
+                        type="number" step="0.01" min="0.02" max="1"
+                        value={risk_controls.max_weekly_loss_pct ?? 0.10}
+                        onChange={(e) => setNestedValue('risk_controls.max_weekly_loss_pct', parseFloat(e.target.value))}
+                        className="flex-1 bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-xl p-3 outline-none focus:border-amber-500 font-mono"
+                      />
+                      <span className="bg-slate-800 px-3 py-3 rounded-xl border border-slate-700 font-mono text-sm text-amber-400 w-16 text-center">
+                        {Math.round((risk_controls.max_weekly_loss_pct ?? 0.10) * 100)}%
+                      </span>
+                    </div>
+                  </div>
+
+                </div>
+              </CardContent>
+            </Card>
 
           </div>
         )}
