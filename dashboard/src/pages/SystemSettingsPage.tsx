@@ -333,8 +333,8 @@ export const SystemSettingsPage: React.FC = () => {
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 items-center justify-between">
                           <span>Passphrase</span>
                           {(execution.exchange === 'okx' || execution.exchange === 'kucoin') 
-                            ? <span className="text-rose-400 text-[10px] bg-rose-500/10 px-2 py-0.5 rounded">Required Here</span> 
-                            : <span className="text-slate-500 text-[10px]">Optional</span>
+                            ? <span className="text-rose-400 text-[10px] bg-rose-500/10 px-2 py-0.5 rounded ml-2">Required Here</span> 
+                            : <span className="text-slate-500 text-[10px] ml-2">Optional</span>
                           }
                         </label>
                         <input 
@@ -344,6 +344,42 @@ export const SystemSettingsPage: React.FC = () => {
                           placeholder="Required for OKX/Kucoin"
                           className="w-full bg-slate-900 border border-slate-700/50 text-slate-200 text-sm rounded-lg p-3 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 font-mono transition-all"
                         />
+                      </div>
+                    </div>
+
+                    {/* Futures & Leverage Setup */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6 pt-6 border-t border-slate-800/50">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Market Type</label>
+                        <select 
+                          value={execution.market_type ?? 'spot'}
+                          onChange={(e) => setNestedValue('execution.market_type', e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700/50 text-slate-200 text-sm rounded-lg p-3 outline-none focus:border-blue-500 transition-all cursor-pointer"
+                        >
+                          <option value="spot">Spot Market (No Leverage)</option>
+                          <option value="future">Futures (Perpetual / Margin)</option>
+                        </select>
+                      </div>
+                      
+                      <div className={cx("transition-opacity duration-300", execution.market_type === 'future' ? "opacity-100" : "opacity-30 pointer-events-none")}>
+                        <label className="flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                          <span>Max Account Leverage</span>
+                          <span className="text-blue-400 font-mono text-[10px] bg-blue-500/10 px-2 py-0.5 rounded">Risk Limit</span>
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <input 
+                            type="range" min="1" max="100" step="1"
+                            value={execution.max_leverage ?? 10}
+                            onChange={(e) => setNestedValue('execution.max_leverage', parseInt(e.target.value))}
+                            className="flex-1 accent-blue-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                          />
+                          <span className="text-blue-400 font-mono font-bold w-12 text-right">
+                            {execution.max_leverage ?? 10}x
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">
+                          Agen AI (Risk Manager) tidak diizinkan melebihi batas batas leverage maksimum ini saat menggunakan Futures.
+                        </p>
                       </div>
                     </div>
                   </div>
