@@ -51,7 +51,7 @@ DEFAULT_CONFIG = {
         "mode": "live",                       # disabled | paper | live
         "broker": "ccxt",                    # paper | ccxt | alpaca
         # Broker-specific settings
-        "exchange": "binance",               # For CCXT: binance, bybit, okx, coinbase, etc.
+        "exchange": "bybit",               # Changed to bybit to avoid ISP blocks
         "api_key": "",                       # Loaded from BINANCE_API_KEY env var
         "api_secret": "",                    # Loaded from BINANCE_API_SECRET env var
         "password": "",                      # Some exchanges require passphrase (e.g., OKX)
