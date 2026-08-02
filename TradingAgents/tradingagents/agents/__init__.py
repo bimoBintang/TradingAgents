@@ -11,6 +11,8 @@ from .analysts.onchain_analyst import create_onchain_analyst
 from .analysts.macro_geo_analyst import create_macro_geo_analyst
 from .analysts.correlation_analyst import create_correlation_analyst
 from .analysts.prediction_market_analyst import create_prediction_market_analyst
+from .analysts.chart_vision_analyst import create_chart_vision_analyst
+from .analysts.ict_analyst import create_ict_analyst
 
 from .researchers.bear_researcher import create_bear_researcher
 from .researchers.bull_researcher import create_bull_researcher
@@ -51,4 +53,7 @@ __all__ = [
     "create_execution_optimizer",
     # Phase 14: Prediction market agent
     "create_prediction_market_analyst",
+    # TradingView Vision & Smart Money Concepts Agents
+    "create_chart_vision_analyst",
+    "create_ict_analyst",
 ]
