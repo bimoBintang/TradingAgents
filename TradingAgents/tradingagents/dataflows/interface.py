@@ -45,6 +45,10 @@ from .coingecko import (
     get_global_news as get_coingecko_global_news,
 )
 from .coingecko_common import CoinGeckoRateLimitError
+from .tradingview import (
+    get_tradingview_indicators,
+    TradingViewRateLimitError,
+)
 
 # Configuration and routing logic
 from .config import get_config
@@ -87,6 +91,7 @@ VENDOR_LIST = [
     "alpha_vantage",
     "messari",
     "coingecko",
+    "tradingview",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -100,6 +105,7 @@ VENDOR_METHODS = {
     },
     # technical_indicators
     "get_indicators": {
+        "tradingview": get_tradingview_indicators,
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
     },
@@ -171,11 +177,17 @@ def get_vendor(category: str, method: str = None) -> str:
     # Fall back to category-level configuration
     return config.get("data_vendors", {}).get(category, "default")
 
+import inspect
+
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
+    requested_vendor = kwargs.pop("vendor", None)
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
+
+    if requested_vendor:
+        primary_vendors.insert(0, requested_vendor.strip())
 
     if method not in VENDOR_METHODS:
         raise ValueError(f"Method '{method}' not supported")
@@ -194,9 +206,16 @@ def route_to_vendor(method: str, *args, **kwargs):
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
+        # Filter kwargs to only pass parameters accepted by impl_func
         try:
-            return impl_func(*args, **kwargs)
-        except (AlphaVantageRateLimitError, MessariRateLimitError, CoinGeckoRateLimitError):
+            sig = inspect.signature(impl_func)
+            has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if has_var_kwargs:
+                call_kwargs = kwargs
+            else:
+                call_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+            return impl_func(*args, **call_kwargs)
+        except (AlphaVantageRateLimitError, MessariRateLimitError, CoinGeckoRateLimitError, TradingViewRateLimitError):
             continue  # Rate limits trigger fallback
 
     raise RuntimeError(f"No available vendor for '{method}'")

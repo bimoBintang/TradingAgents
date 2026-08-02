@@ -79,6 +79,24 @@ def create_trading_orchestrator(
     # Store configuration
     orch._drawdown_limit = drawdown_limit
 
+    # Register default TradingView & ICT tools
+    from orchestrator.tools import (
+        get_tradingview_analysis,
+        tv_take_screenshot,
+        tv_get_chart_info,
+        tv_set_symbol_timeframe,
+        tv_write_pinescript,
+        tv_manage_alerts,
+        analyze_ict_concepts,
+    )
+    orch.tools.register("get_tradingview_analysis", get_tradingview_analysis, category="technical")
+    orch.tools.register("tv_take_screenshot", tv_take_screenshot, category="chart_visual")
+    orch.tools.register("tv_get_chart_info", tv_get_chart_info, category="chart_visual")
+    orch.tools.register("tv_set_symbol_timeframe", tv_set_symbol_timeframe, category="chart_visual")
+    orch.tools.register("tv_write_pinescript", tv_write_pinescript, category="strategy")
+    orch.tools.register("tv_manage_alerts", tv_manage_alerts, category="alerts")
+    orch.tools.register("analyze_ict_concepts", analyze_ict_concepts, category="technical")
+
     logger.info(
         "[Preset] TradingOrchestrator created | ticker=%s | topology=%s | budget=$%.2f",
         ticker, topology, budget_usd,

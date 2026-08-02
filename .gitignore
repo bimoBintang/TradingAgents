@@ -1,1 +1,15 @@
 .DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/
+node_modules/
+dist/
+*.db
+*.sqlite3
+run_tv_test.py
+run_mcp_test.py

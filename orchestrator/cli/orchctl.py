@@ -282,6 +282,24 @@ def cmd_status(args) -> None:
     print()
 
 
+# ── Command: tv-status ───────────────────────────────────────────────────────
+
+def cmd_tv_status(args) -> None:
+    """Show TradingView CDP and dataflow integration status."""
+    from orchestrator.mcp.tradingview_mcp_client import TradingViewMCPClient
+
+    _header("TradingView Telemetry & CDP Status")
+    client = TradingViewMCPClient()
+    is_healthy = client.check_health()
+
+    _row("CDP Host", "127.0.0.1")
+    _row("CDP Port", "9222")
+    _row("CDP Connected", C.GREEN + "YES (Live Desktop)" + C.RESET if is_healthy else C.YELLOW + "NO (Fallback Mode Active)" + C.RESET)
+    _row("Fallback State", "ACTIVE (Quantitative TA)" if not is_healthy else "OFF (Live CDP)")
+    _row("Safety Mode", "FAIL-CLOSED (Strict)")
+    print()
+
+
 # ── Parser ────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -292,12 +310,9 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=textwrap.dedent("""
           Examples:
             python -m orchestrator.cli.orchctl run --ticker BTCUSDT
+            python -m orchestrator.cli.orchctl tv-status
             python -m orchestrator.cli.orchctl agents
             python -m orchestrator.cli.orchctl tools
-            python -m orchestrator.cli.orchctl memory search "bitcoin oversold"
-            python -m orchestrator.cli.orchctl memory list --limit 10
-            python -m orchestrator.cli.orchctl memory stats
-            python -m orchestrator.cli.orchctl token-usage --demo
             python -m orchestrator.cli.orchctl status
         """),
     )
@@ -311,8 +326,15 @@ def build_parser() -> argparse.ArgumentParser:
                        choices=["pipeline", "hierarchical", "mesh"])
     p_run.add_argument("--budget",   type=float, default=1.00,
                        help="Max LLM budget in USD (default: 1.00)")
-    p_run.add_argument("--dry-run",  action="store_true",
-                       help="Simulate without touching real money")
+    p_run.add_argument("--dry-run",  action="store_true", default=True,
+                       help="Simulate without touching real money (default: True)")
+    p_run.add_argument("--use-tv",   action="store_true",
+                       help="Enable TradingView TA & ChartVisionAgent")
+    p_run.add_argument("--live-real-money-confirm", action="store_true",
+                       help="Explicit flag required for live real-money execution")
+
+    # ── tv-status ──
+    sub.add_parser("tv-status", help="Show TradingView CDP and dataflow status")
 
     # ── agents ──
     sub.add_parser("agents", help="List all registered agents")
@@ -348,6 +370,7 @@ def main(argv=None) -> None:
 
     dispatch = {
         "run":         cmd_run,
+        "tv-status":   cmd_tv_status,
         "agents":      cmd_agents,
         "tools":       cmd_tools,
         "memory":      cmd_memory,

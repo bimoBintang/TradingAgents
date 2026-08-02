@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.dependencies import init_graph
-from api.routers import system, portfolio, journal, analysis, config, market_data, admin, patterns, pending
+from api.routers import system, portfolio, journal, analysis, config, market_data, admin, patterns, pending, tradingview
 from api.routers import websocket as ws_router
 from api.auth import get_current_user
 from api.database import engine, SessionLocal
@@ -73,6 +73,7 @@ app.include_router(market_data.router)
 app.include_router(patterns.router)
 app.include_router(admin.router)
 app.include_router(pending.router)
+app.include_router(tradingview.router)
 app.include_router(ws_router.router)
 
 # ── Metrics ───────────────────────────────────────────────────────────

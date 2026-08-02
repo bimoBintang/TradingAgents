@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChartPanel } from '../components/dashboard/ChartPanel';
+import { TradingViewPanel } from '../components/dashboard/TradingViewPanel';
 import { MarketSelector } from '../components/dashboard/MarketSelector';
 import { Card, CardContent } from '../components/ui/Card';
 import { Alert, AlertDescription } from '../components/ui/Alert';
@@ -158,6 +159,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setAct
         </div>
           {/* NEW FULL WIDTH CHART PANEL */}
           <ChartPanel ticker={activeTicker} />
+
+          {/* TRADINGVIEW TELEMETRY & VISION PANEL */}
+          <TradingViewPanel activeTicker={activeTicker} className="mt-4" />
       </div>
 
       <div className="grid grid-cols-12 gap-4 mt-6">

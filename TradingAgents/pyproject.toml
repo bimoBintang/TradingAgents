@@ -33,6 +33,9 @@ dependencies = [
     "pydantic>=2.10.0",
     "scipy>=1.11.0",
     "cryptography>=44.0.0",
+    "tradingview-ta>=3.3.0",
+    "psycopg2-binary>=2.9.9",
+    "pgvector>=0.2.5",
 ]
 
 [project.optional-dependencies]

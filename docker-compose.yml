@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # ── Relational Database & Vector Database Service (pgvector) ──
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tradingagents-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tradingagents
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: tradingagents
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradingagents -d tradingagents"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Distributed Caching & Event Bus Service (Redis) ──
+  redis:
+    image: redis:7-alpine
+    container_name: tradingagents-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend FastAPI & Multi-Agent Orchestrator Service ──
+  backend:
+    build:
+      context: .
+      dockerfile: TradingAgents/Dockerfile
+    container_name: tradingagents-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://tradingagents:secretpassword@postgres:5432/tradingagents
+      - REDIS_URL=redis://redis:6379/0
+      - VECTOR_DB_TYPE=pgvector
+      - PYTHONPATH=/app:/app/TradingAgents
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - backend-data:/app/TradingAgents/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/tradingview/mcp-status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Frontend React Dashboard & Nginx Proxy Service ──
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: tradingagents-dashboard
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  backend-data:
+    driver: local

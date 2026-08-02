@@ -1,44 +1,38 @@
-# ── Stage 1: Builder ──────────────────────────────────────────────────
-FROM python:3.10-slim AS builder
-
-WORKDIR /build
-
-# System deps for psycopg2 compilation
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Python deps first (layer caching)
-COPY pyproject.toml ./
-COPY api/requirements.txt ./api/requirements.txt
-RUN pip install --no-cache-dir --prefix=/install \
-    -e ".[crypto,stocks]" \
-    -r api/requirements.txt
-
-# ── Stage 2: Production ──────────────────────────────────────────────
+# ── Backend Dockerfile for TradingAgents FastAPI & Orchestrator ──
 FROM python:3.10-slim
 
 WORKDIR /app
 
-# Runtime deps only (no gcc)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 curl && \
-    rm -rf /var/lib/apt/lists/*
+    build-essential \
+    libpq-dev \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy installed packages from builder
-COPY --from=builder /install /usr/local
+# Copy project root orchestrator and TradingAgents codebase
+COPY orchestrator /app/orchestrator
+COPY TradingAgents /app/TradingAgents
 
-# Copy application code
-COPY . .
+# Set working directory to TradingAgents backend
+WORKDIR /app/TradingAgents
 
-# Non-root user for security
-RUN useradd --create-home appuser && chown -R appuser:appuser /app
-USER appuser
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir uvicorn fastapi sqlalchemy slowapi pytest pytest-asyncio pydantic requests websockets Pillow psycopg2-binary pgvector redis && \
+    pip install --no-cache-dir -e .
+
+# Environment variables
+ENV PYTHONPATH="/app:/app/TradingAgents"
+ENV DATABASE_URL="sqlite:///./trading_agents.db"
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8000/api/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8000/api/tradingview/mcp-status || exit 1
 
+# Start FastAPI server
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
