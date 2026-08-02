@@ -16,6 +16,72 @@ Sistem ini bertindak layaknya tim *Hedge Fund* otonom berbasis LLM, dengan agen-
 
 ---
 
+## 🗺️ Pemetaan Konsep & Arsitektur End-to-End Proyek
+
+Berikut adalah pemetaan alur sistem dari *User Request*, pemrosesan agen spesialis, siklus perdebatan, hingga eksekusi keputusan terlindungi:
+
+```mermaid
+graph TD
+    subgraph "1. User Input & SaaS Tenant Isolation"
+        Req[API Request / CLI Command] --> Auth[JWT & User Isolation Context]
+        Auth --> State[AgentState / MessagesState]
+    end
+
+    subgraph "2. Analyst Nodes (tradingagents/agents/analysts/)"
+        State --> Mkt[Market Analyst]
+        State --> Quant[Quant Analyst]
+        State --> Onchain[On-Chain / DeFi Analyst]
+        State --> Macro[Macro Geopolitics Analyst]
+        State --> Pred[Prediction Market Analyst]
+        State --> CV[ChartVision Analyst - Multimodal Vision]
+        State --> ICT[ICT Analyst - Smart Money Concepts]
+    end
+
+    subgraph "3. Debate & Decision Layer"
+        CV & ICT & Quant & Mkt --> Debate[InvestDebateState - Bull vs Bear Debate]
+        Debate --> Trader[Trader Node - Structured <TRADE_DECISION> JSON]
+        Trader --> Risk[RiskDebateState - Aggressive vs Conservative vs Neutral]
+    end
+
+    subgraph "4. Safety & Execution Guard Layer (orchestrator/guards/)"
+        Risk --> Guard[TVExecutionGuard - Fail-Closed & Symmetric Conflict Matrix]
+        Guard --> CB[CircuitBreaker - Drawdown -15% & Kill Switch]
+        CB --> Exec[Binance / Paper Order Execution / tv_backtest]
+    end
+
+    subgraph "5. Enterprise Persistence Stack (Docker)"
+        State <--> PG[(PostgreSQL + pgvector - VectorDB & Relational DB)]
+        Mkt & TA <--> RD[(Redis Cache - 60s TTL & PubSub)]
+    end
+```
+
+---
+
+## 🧠 Penjelasan Pemetaan Konsep Utama
+
+1. **`AgentState` & Alur Laporan Spesialis**:
+   - `AgentState` (di `tradingagents/agents/utils/agent_states.py`) bertindak sebagai *central memory state* yang menampung seluruh laporan dari tim analis:
+     - `quant_report`, `onchain_report`, `macro_geo_report`, `prediction_market_report`, **`chart_vision_report`**, dan **`ict_report`**.
+   - Setiap analis bertugas memperkaya `AgentState` sebelum diteruskan ke sesi perdebatan.
+
+2. **Siklus Perdebatan & Pengambilan Keputusan (`<TRADE_DECISION>`)**:
+   - **`InvestDebateState`**: Perdebatan antara *Bull Researcher* dan *Bear Researcher* untuk menguji argumen pasar.
+   - **`Trader Node`**: Menghasilkan *output* terstruktur dalam blok `<TRADE_DECISION>` JSON yang mencakup `action` (BUY/SELL/HOLD), `confidence_score`, `quantity_pct`, `stop_loss_pct`, `take_profit_pct`, `leverage`, `position_side`, dan `risk_reward_ratio`.
+   - **`RiskDebateState`**: Perdebatan 3 arah (*Aggressive*, *Conservative*, *Neutral*) untuk mengevaluasi ukuran posisi dan risiko portofolio.
+
+3. **Lapisan Keamanan Finansial & Guarding (`orchestrator/guards/`)**:
+   - Keputusan dari agen tidak langsung dieksekusi ke pasar, melainkan difilter oleh **`TVExecutionGuard`**:
+     - **Fail-Closed Principle**: Menolak/meminta konfirmasi manual jika data validasi CDP/TA tidak lengkap.
+     - **Symmetric Conflict Matrix**: Memblokir sinyal berlawanan antara TA Klasik vs ICT Order Blocks (High/Medium strength).
+     - **Multiplicative Position Sizing**: Menyesuaikan alokasi modal Kelly Criterion secara otomatis.
+   - **`CircuitBreaker`**: Menghentikan seluruh aktivitas jika terjadi kegagalan $N=3$ berturut-turut atau portfolio drawdown menembus $-15\%$.
+
+4. **Enterprise Docker Persistence Stack**:
+   - **PostgreSQL (`pgvector`)**: Menyimpan histori transaksi relasional sekaligus bertindak sebagai **VectorDB** untuk pencarian memori jangka panjang agen (*LongTermMemory*) dan pola trajektori AI (*ReasoningBank*).
+   - **Redis**: Menyimpan *cache* indikator teknikal `tradingview-ta` (60s TTL) dan memfasilitasi komunikasi Pub/Sub terdistribusi (*AgentBus*).
+
+---
+
 ## 🏗️ Arsitektur CMAOP (Core Platform)
 
 Platform orkestrasi ini dibangun dari nol (tanpa framework eksternal) untuk performa maksimum dan kontrol penuh atas *safety* dan *memory*.
