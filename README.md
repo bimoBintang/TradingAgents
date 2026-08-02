@@ -10,56 +10,103 @@
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
 ![Status](https://img.shields.io/badge/status-active-success.svg)
 
-Selamat datang di repository **TradingAgents**. Proyek ini adalah monorepo yang menggabungkan **Custom Multi-Agent Orchestration Platform (CMAOP)** canggih di sisi backend (Python), agen **Smart Money Concepts (ICTAgent)**, integrasi **TradingView MCP & Vision**, serta **React Dashboard** pemantauan real-time.
+Selamat datang di repository **TradingAgents**. Proyek ini adalah monorepo yang menggabungkan **Custom Multi-Agent Orchestration Platform (CMAOP)** canggih di sisi backend (Python) dan Dashboard pemantauan real-time di sisi frontend (React).
 
-Sistem ini bertindak layaknya tim *Hedge Fund* otonom berbasis LLM, dengan agen-agen spesialis (Technical Analyst, Chart Vision, ICT Analyst, Risk Manager) yang berkolaborasi untuk mengambil keputusan trading dengan pelindung finansial **Fail-Closed**.
+Sistem ini bertindak layaknya tim *Hedge Fund* otonom berbasis LLM, dengan agen-agen spesialis (Technical Analyst, Chart Vision, ICT Smart Money Analyst, Risk Manager, Trader Agent) yang berkolaborasi untuk mengambil keputusan trading dengan pelindung finansial **Fail-Closed**.
 
 ---
 
-## 🏗️ Arsitektur Sistem CMAOP
+## 🏗️ Arsitektur CMAOP (Core Platform)
 
-Platform orkestrasi ini dibangun dari nol untuk performa maksimum, keamanan *Fail-Closed*, dan integrasi memori terdistribusi.
+Platform orkestrasi ini dibangun dari nol (tanpa framework eksternal) untuk performa maksimum dan kontrol penuh atas *safety* dan *memory*.
 
 ```mermaid
 graph TD
-    subgraph "Orchestrator Core & Memory Stack"
+    subgraph "Orchestrator Facade (CMAOP)"
+    direction TB
+    
+    subgraph "Phase 1: Core Engine"
         TR[TopologyRouter]
-        AB[AgentBus Event Publisher]
+        AB[AgentBus]
         SM[StateManager]
-        PG[(PostgreSQL + pgvector\nRelational & VectorDB)]
-        RD[(Redis Cache & PubSub)]
+        TRg[ToolRegistry]
+        TR -->|Schedules| AB
+        AB <-->|Pub/Sub| SM
+    end
+    
+    subgraph "Phase 2: Memory Layer"
+        VM[(VectorMemory)]
+        STM[(ShortTermMemory)]
+        LTM[(LongTermMemory)]
+        RB[(ReasoningBank)]
+    end
+    
+    subgraph "Phase 3: Guards & Safety"
+        GR[GuardRails\nHalusinasi/Loop]
+        TM[TokenMeter\nBudget API]
+        CB[CircuitBreaker\nKill Switch]
+        EG[TVExecutionGuard\nFail-Closed Safety]
+    end
+    
+    Core --> Memory
+    Core --> Guards
     end
 
     subgraph "Agents & Integrations"
-        CV[ChartVisionAgent\nMultimodal LLM Vision]
-        ICT[ICTAgent\nSmart Money Concepts]
-        TA[TradingView TA Engine\n60s TTL Cache]
-        MCP[TradingView MCP Client\nCDP Port 9222 / Fallback]
+        A1(Technical Agent)
+        A2(ChartVisionAgent)
+        A3(ICTAgent)
+        A4(Risk Manager Agent)
+        A5(Trader Agent)
+        TV[TradingView TA & MCP Client]
+        PG[(PostgreSQL pgvector)]
+        RD[(Redis Cache)]
     end
 
-    subgraph "Safety & Execution Layer"
-        EG[TVExecutionGuard\nFail-Closed & 60s Timeout]
-        CB[CircuitBreaker\nDrawdown & Kill Switch]
-        BT[TV Strategy Backtester\nWilder's RSI & Sample Warning]
-    end
-
-    TR --> CV
-    TR --> ICT
-    MCP <-->|CDP 127.0.0.1:9222| TA
-    ICT --> EG
-    CV --> EG
-    EG --> CB
-    CB --> BT
-    SM <--> PG
-    TA <--> RD
+    TR --> A1
+    TR --> A2
+    TR --> A3
+    TR --> A4
+    TR --> A5
+    TRg --> TV
+    Memory <--> PG
+    Core <--> RD
 ```
 
 ---
 
-## 🧠 Fitur Utamadan Komponen Sistem
+## 🧠 Komponen Sistem Utama
+
+Sistem ini terdiri dari 4 fase arsitektur utama CMAOP ditambah integrasi TradingView & Smart Money Concepts:
+
+### 1. Core Engine (Phase 1)
+- **`AgentBus`**: Mesin komunikasi terdistribusi berbasis *event-driven* (Pub/Sub).
+- **`StateManager`**: Penyimpanan memori bersama terisolasi per sesi trading.
+- **`TopologyRouter`**: Pengatur alur kerja agen yang mendukung berbagai topologi (*Pipeline*, *Hierarchical*, *Mesh*).
+- **`ToolRegistry`**: Pendaftaran dan pembatas akses tool spesifik per agen.
+
+### 2. Memory Layer (Phase 2)
+- **`VectorMemory`**: Database vektor untuk pencarian semantik trajektori trading.
+- **`ShortTermMemory`**: Memori percakapan agen dengan pembersihan TTL otomatis.
+- **`LongTermMemory`**: Penyimpanan lintas sesi untuk rekapan PnL dan statistik historis agen.
+- **`ReasoningBank`**: Bank pola keputusan AI yang sukses untuk pembelajaran berkelanjutan.
+
+### 3. Guards & Financial Safety (Phase 3)
+- **`GuardRails`**: Mencegah halusinasi ticker/action dan mengunci batasan format output.
+- **`TokenMeter`**: Membatasi konsumsi token LLM API (`BudgetExceededError`).
+- **`CircuitBreaker`**: Pelindung tingkat sistem (Trigger $N=3$ fails, Drawdown limit $-15\%$, Emergency Kill Switch, & *Manual Reset Only*).
+- **`TVExecutionGuard`**: Pelindung finansial **Fail-Closed Architecture**, **Symmetric Long & Short Conflict Matrix**, **60-Second Order Timeout**, dan **Multiplicative Kelly Position Sizing**.
+
+### 4. SDK & CLI (Phase 4)
+- Decorator Python terpadu (`@agent` dan `@tool`) untuk kemudahan pembuatan agen baru.
+- Utility CLI `orchctl` untuk pemantauan status orkestrasi langsung dari terminal.
+
+---
+
+## ⚡ Fitur Integrasi Lanjutan (TradingView & ICT Smart Money)
 
 1. **Native TradingView Dataflow & 60s Cache**:
-   - Analisis teknikal 24/7 menggunakan `tradingview-ta` dengan validasi parameter presisi, *retry backoff*, dan *60-second in-memory TTL caching*.
+   - Analisis teknikal 24/7 via `tradingview-ta` dengan validasi parameter presisi, *retry backoff*, dan *60-second in-memory TTL caching*.
 2. **TradingView MCP & ChartVisionAgent**:
    - Integrasi Chrome DevTools Protocol (`127.0.0.1:9222`) untuk otomasi TradingView Desktop.
    - **Fallback Mode First-Class Citizen**: Beralih otomatis ke analisis kuantitatif jika CDP terputus.
@@ -71,15 +118,6 @@ graph TD
      - **Liquidity Sweeps**: Penetrasi wick $> 0.10\%$ dengan *reversal close* dalam $\le 2$ candle.
      - **Fair Value Gaps (FVG)**: Melacak status pengisian 50% Consequent Encroachment (CE) & 100% Fill.
      - **Optimal Trade Entry (OTE)**: Zona Fib 61.8% – 78.6%.
-4. **Financial Safety & TVExecutionGuard**:
-   - **Fail-Closed Architecture**: Menolak/meminta konfirmasi manual jika data validasi tidak lengkap.
-   - **Symmetric Conflict Matrix**: Memblokir sinyal berlawanan (BUY vs STRONG_SELL / SELL vs STRONG_BUY, serta konflik ICT Order Block).
-   - **Multiplicative Position Sizing**: Pengurangan ukuran posisi otomatis ($0.75\times$ untuk Medium OB, $0.50\times$ untuk High OB) terintegrasi dengan Kelly Criterion.
-   - **60-Second Order Expiration**: Timeout otomatis untuk order yang menunggu konfirmasi.
-5. **CircuitBreaker System**:
-   - Membatasi kegagalan agen ($N=3$), mencegah *drawdown* portofolio ($>-15\%$), dan dilengkapi *Global Emergency Kill Switch* serta kebijakan *Manual Reset Only*.
-6. **React Dashboard & Panel Glassmorphism**:
-   - Panel telemetry visual untuk memantau status CDP, indikator teknikal real-time, laporan `ChartVisionAgent`, serta Pine Script Injector box.
 
 ---
 
@@ -116,7 +154,7 @@ docker compose ps
 
 ## 🚀 Penggunaan Lokal & CLI (`orchctl`)
 
-### 1. Menjalankan Backend API (Local Python)
+### 1. Backend Engine (FastAPI & AI Agents)
 
 ```bash
 cd TradingAgents
@@ -124,7 +162,7 @@ pip install -e .
 uvicorn api.main:app --reload --port 8000
 ```
 
-### 2. Menjalankan Dashboard UI (Local React)
+### 2. Frontend Dashboard (React & Vite)
 
 ```bash
 cd dashboard
@@ -132,22 +170,54 @@ npm install
 npm run dev
 ```
 
-### 3. Menggunakan CLI Terminal (`orchctl`)
+### 3. Menggunakan CLI (`orchctl`)
 
 ```bash
 # Periksa status kesehatan TradingView Telemetry & Fail-Closed Guard
 python3 -m orchestrator.cli.orchctl tv-status
 
-# Periksa status CircuitBreaker & Agen
+# Periksa status platform & Circuit Breaker
 python3 -m orchestrator.cli.orchctl status
 
-# Jalankan siklus trading penuh untuk BTCUSDT dengan TradingView & Dry-Run safety
+# Lihat agen dan tools yang terdaftar
+python3 -m orchestrator.cli.orchctl agents
+python3 -m orchestrator.cli.orchctl tools
+
+# Cek penggunaan token LLM
+python3 -m orchestrator.cli.orchctl token-usage --demo
+
+# Jalankan satu siklus trading penuh untuk BTCUSDT dengan TradingView & Dry-Run safety!
 python3 -m orchestrator.cli.orchctl run --ticker BTCUSDT --use-tv
 ```
 
 ---
 
-## 🧪 Menjalankan Automated Test Suite (30/30 Passed)
+## 💻 Contoh Penggunaan (SDK)
+
+Menyesuaikan atau menambah agen baru sangat mudah dengan pendekatan deklaratif.
+
+```python
+from orchestrator.sdk import agent, tool, build_orchestrator
+
+@tool(name="get_price", category="market")
+def get_price(ticker: str) -> float:
+    return 65_000.0  # logika fetch API
+
+@agent(role="Market Analyst", priority=10)
+async def analyst(state, bus, tools, **kwargs):
+    price = tools.get_for_agent(["market"])["get_price"](ticker=state.ticker)
+    state.add_decision({"action": "BUY", "confidence": 0.85})
+    return {"status": "analysis_complete"}
+
+# Build & Run!
+orch = build_orchestrator("BTCUSDT", topology="pipeline")
+result = orch.run_sync()
+print(f"Final Decision: {result.final_decision}")
+```
+
+---
+
+## 🧪 Automated Test Suite (30/30 Passed)
 
 ```bash
 # 1. API & Dataflow Tests
