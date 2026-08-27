@@ -1,6 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.prompt_blocks import (
-    ANTI_HALLUCINATION, SELF_CHALLENGE, CONFIDENCE_SCORING, STRICT_SYSTEM_PREAMBLE,
+    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, CROSS_REFERENCE_MANDATE, TEMPORAL_AWARENESS, SELF_CHALLENGE, CONFIDENCE_SCORING, STRICT_SYSTEM_PREAMBLE,
 )
 
 from tradingagents.agents.utils.agent_utils import get_stock_data, get_indicators
@@ -71,6 +71,9 @@ def create_quant_analyst(llm):
             "returns insufficient_data, state that the data was unavailable and skip.\n\n"
             "Append a Markdown table summarizing key metrics at the end of your report."
             + ANTI_HALLUCINATION
+            + ANTI_CONFIRMATION_BIAS
+            + CROSS_REFERENCE_MANDATE
+            + TEMPORAL_AWARENESS, ANTI_CONFIRMATION_BIAS, CROSS_REFERENCE_MANDATE, TEMPORAL_AWARENESS
             + SELF_CHALLENGE
             + CONFIDENCE_SCORING
         )

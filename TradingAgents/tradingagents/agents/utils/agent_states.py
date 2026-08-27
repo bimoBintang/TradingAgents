@@ -95,3 +95,9 @@ class AgentState(MessagesState):
     # Multi-tenant context (SaaS isolation)
     user_id: Annotated[int, "Authenticated user ID for tenant isolation"]
     user_config: Annotated[dict, "User-specific runtime configuration loaded from database"]
+
+    # Phase 15: Analyst Synthesizer
+    synthesizer_report: Annotated[str, "Unified briefing of all analyst reports"]
+
+    # Phase 16: Data Quality
+    data_quality_report: Annotated[str, "Quality score and warnings about the data freshness/completeness"]

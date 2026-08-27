@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { 
   createChart, 
   ColorType, 
@@ -113,7 +113,29 @@ const INDICATOR_OPTIONS = [
 
 // ── ChartPanel Component ─────────────────────────────────────────────
 
-export const ChartPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
+/**
+ * Imperative controls exposed for remote/MCP-driven control (Fase 7 —
+ * see mcp_server/tools_chart.py + api/chart_control.py). `ticker` is
+ * deliberately NOT settable here — it's owned by the parent
+ * (OverviewPage's activeTicker), which is the one thing set_chart_view
+ * changes outside of this ref.
+ */
+export interface ChartPanelHandle {
+  setTimeframe: (tf: string) => void;
+  setActiveIndicator: (indicator: string) => void;
+  triggerPatternDetection: () => void;
+  highlightPriceLevel: (price: number, label: string, color?: string) => void;
+  clearAiHighlights: () => void;
+}
+
+interface ChartPanelProps {
+  ticker: string;
+  /** Fires whenever ticker/timeframe/activeIndicator changes, so a
+   * parent can report the combined state over /ws/chart-control. */
+  onStateChange?: (state: { ticker: string; timeframe: string; activeIndicator: string }) => void;
+}
+
+export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticker, onStateChange }, ref) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const seriesRef = useRef<Record<string, any>>({});
@@ -128,7 +150,11 @@ export const ChartPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
   const flowSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const vwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const vproLinesRef = useRef<IPriceLine[]>([]);
-  
+  // AI-drawn price-line highlights (Fase 7's highlight_price_level MCP
+  // tool) — kept separate from the overlay refs above so they persist
+  // independently of `activeIndicator` and can be cleared on their own.
+  const aiHighlightLinesRef = useRef<IPriceLine[]>([]);
+
   const [activeIndicator, setActiveIndicator] = useState('all');
   const [timeframe, setTimeframe] = useState('1D');
 
@@ -395,19 +421,25 @@ export const ChartPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
     r.rsiLower.applyOptions({ visible: showAll || activeIndicator === 'rsi' });
   }, [activeIndicator]);
 
-  // 11. Auto-clear patterns when ticker or timeframe changes
+  // 11. Auto-clear patterns AND AI highlights when ticker or timeframe
+  // changes — a price level highlighted on AAPL doesn't mean anything
+  // once the chart has switched to BTC-USD.
   useEffect(() => {
     clearPatterns();
     setHasPatterns(false);
     setPatternError(null);
+    const cs = seriesRef.current.candlestick;
+    if (cs) {
+      aiHighlightLinesRef.current.forEach(l => cs.removePriceLine(l));
+      aiHighlightLinesRef.current = [];
+    }
   }, [ticker, timeframe, clearPatterns]);
 
-  const handleDetectPatterns = async () => {
-    if (hasPatterns) {
-      clearPatterns();
-      setHasPatterns(false);
-      return;
-    }
+  // Shared by the "Auto-Detect" button (toggle: detect, or clear if
+  // already showing) and the remote/MCP trigger (always re-detect —
+  // see triggerPatternDetection in the imperative handle below, which
+  // calls this directly rather than through the toggle).
+  const detectAndDrawPatterns = async () => {
     setIsDetecting(true);
     setPatternError(null);
     try {
@@ -426,6 +458,42 @@ export const ChartPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
       setIsDetecting(false);
     }
   };
+
+  const handleDetectPatterns = () => {
+    if (hasPatterns) {
+      clearPatterns();
+      setHasPatterns(false);
+      return;
+    }
+    detectAndDrawPatterns();
+  };
+
+  // ── Imperative handle (Fase 7 — remote/MCP chart control) ──────────
+  useImperativeHandle(ref, () => ({
+    setTimeframe: (tf: string) => setTimeframe(tf),
+    setActiveIndicator: (indicator: string) => setActiveIndicator(indicator),
+    triggerPatternDetection: () => { detectAndDrawPatterns(); },
+    highlightPriceLevel: (price: number, label: string, color = '#f59e0b') => {
+      const cs = seriesRef.current.candlestick;
+      if (!cs) return;
+      aiHighlightLinesRef.current.push(cs.createPriceLine({
+        price, color, lineWidth: 2 as LineWidth, lineStyle: LineStyle.Solid,
+        axisLabelVisible: true, title: `[AI] ${label}`,
+      }));
+    },
+    clearAiHighlights: () => {
+      const cs = seriesRef.current.candlestick;
+      if (!cs) return;
+      aiHighlightLinesRef.current.forEach(l => cs.removePriceLine(l));
+      aiHighlightLinesRef.current = [];
+    },
+  }), []);
+
+  // Report combined chart state up (OverviewPage forwards this over
+  // /ws/chart-control) whenever what's displayed changes.
+  useEffect(() => {
+    onStateChange?.({ ticker, timeframe, activeIndicator });
+  }, [ticker, timeframe, activeIndicator, onStateChange]);
 
   // SMC info badges
   const smcBadges = (
@@ -515,4 +583,6 @@ export const ChartPanel: React.FC<{ ticker: string }> = ({ ticker }) => {
       </CardContent>
     </Card>
   );
-};
+});
+
+ChartPanel.displayName = 'ChartPanel';

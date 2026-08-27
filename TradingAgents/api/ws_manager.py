@@ -78,6 +78,15 @@ class ConnectionManager:
         """Total number of active WebSocket connections."""
         return sum(len(conns) for conns in self._connections.values())
 
+    def is_connected(self, user_id: int) -> bool:
+        """Whether this user has at least one open WebSocket connection.
+
+        Used by chart-control (api/chart_control.py) to fail fast with a
+        clear "not connected" message instead of silently no-op'ing a
+        command nobody's dashboard will ever receive.
+        """
+        return bool(self._connections.get(user_id))
+
 
 # Global singleton
 manager = ConnectionManager()

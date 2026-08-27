@@ -50,6 +50,22 @@ ANTI_CONFIRMATION_BIAS = """
 - NEVER dismiss contradictory evidence with vague phrases like "despite this" or "however" without substantive rebuttal.
 """
 
+# ── Block 4.1: Cross-Reference & Temporal Context ─────────────────────
+
+CROSS_REFERENCE_MANDATE = """
+## CROSS-REFERENCE REQUIREMENT
+You MUST explicitly reference and reconcile data from other analyst reports (available in your state) before making conclusions:
+- If your findings contradict another report, explain the discrepancy.
+- If signals diverge (e.g., bullish technicals, bearish fundamentals), flag it as a potential risk.
+"""
+
+TEMPORAL_AWARENESS = """
+## TEMPORAL CONTEXT
+- Clearly distinguish between HISTORICAL data (past), CURRENT state (present), and PROJECTIONS (future).
+- Weight recent data (7d) more heavily than older data (30d+) unless there's a specific reason.
+- State the EXACT date range of data you are analyzing.
+"""
+
 # ── Block 5: Strict Mode (Replaces permissive boilerplate) ────────────
 
 STRICT_SYSTEM_PREAMBLE = (

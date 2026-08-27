@@ -10,7 +10,7 @@ import logging
 import re
 import time
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Set
+from typing import Optional, Dict, Any, List, Set, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +22,13 @@ from tradingagents.execution.order_models import (
     OrderType,
     OrderResult,
     OrderStatus,
+    PositionInfo,
 )
 from tradingagents.execution.portfolio_manager import PortfolioManager
 from tradingagents.execution.position_tracker import PositionTracker
 from tradingagents.execution.brokers.broker_base import BaseBroker
 from tradingagents.execution.stop_loss_manager import StopLossManager, ExitSignal
+from tradingagents.execution.risk_controls import RiskController
 
 
 class ExecutionEngine:
@@ -54,10 +56,10 @@ class ExecutionEngine:
         broker: BaseBroker,
         portfolio_manager: PortfolioManager,
         position_tracker: Optional[PositionTracker] = None,
-        risk_controller: Optional["RiskController"] = None,
+        risk_controller: Optional[RiskController] = None,
         stop_loss_manager: Optional[StopLossManager] = None,
-        journal = None,
-        notifier = None,
+        journal: Optional[Any] = None,
+        notifier: Optional[Any] = None,
         order_flow_analyzer = None,
         min_confidence: float = 0.5,
         max_daily_loss_pct: float = 0.05,
@@ -116,6 +118,9 @@ class ExecutionEngine:
 
         # Pending orders awaiting manual approval
         self._pending_orders: Dict[str, Dict[str, Any]] = {}
+        
+        # Callback for automated reflection on position close
+        self.on_position_closed: Optional[Callable[[str, float], None]] = None
 
     # ── Idempotency ───────────────────────────────────────────────────
 
@@ -746,6 +751,13 @@ class ExecutionEngine:
                 pnl_str = f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
                 self._log("CLOSED", f"{ticker} — P&L: {pnl_str}", ticker=ticker)
 
+                # Trigger reflection callback
+                if self.on_position_closed:
+                    try:
+                        self.on_position_closed(ticker, pnl)
+                    except Exception as e:
+                        self._log("ERROR", f"Reflection callback failed: {e}", ticker=ticker)
+
                 # Phase 5: Log fill with realized PnL
                 if self.journal:
                     self.journal.log_fill(result, realized_pnl=pnl)
@@ -878,6 +890,12 @@ class ExecutionEngine:
                         f"{signal.ticker} auto-exit ({signal.reason.value}) — P&L: {pnl_str}",
                         ticker=signal.ticker,
                     )
+                    
+                    if pnl is not None and self.on_position_closed:
+                        try:
+                            self.on_position_closed(signal.ticker, pnl)
+                        except Exception as e:
+                            self._log("ERROR", f"Reflection callback failed: {e}", ticker=signal.ticker)
 
                 results.append(result)
 

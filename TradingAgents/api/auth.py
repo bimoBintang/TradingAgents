@@ -33,24 +33,26 @@ def get_clerk_jwks():
 def get_user_by_clerk_id(db: Session, clerk_id: str) -> Optional[User]:
     return db.query(User).filter(User.clerk_id == clerk_id).first()
 
-async def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    """Extract and validate the JWT from the Clerk Authorized Bearer token."""
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired session from Clerk",
-    )
-    
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise credentials_exception
-        
-    token = auth_header.split(" ")[1]
-    
+
+class ClerkTokenInvalid(Exception):
+    """A Clerk bearer token failed verification (bad signature, missing kid, etc.)."""
+
+
+def verify_clerk_jwt(token: str) -> str:
+    """Verify a Clerk-issued JWT and return its `sub` (Clerk user id).
+
+    Pure verification only — no DB access, no FastAPI dependencies — so
+    it can be reused by both the REST API (get_current_user, below) and
+    the MCP server's HTTP transport (mcp_server/auth.py), which has no
+    FastAPI Request to depend on.
+
+    Raises ClerkTokenInvalid on any failure.
+    """
     try:
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid")
         if not kid:
-            raise credentials_exception
+            raise ClerkTokenInvalid("Token header missing 'kid'")
 
         jwks = get_clerk_jwks()
         rsa_key = {}
@@ -66,8 +68,8 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
                 break
 
         if not rsa_key:
-            raise credentials_exception
-            
+            raise ClerkTokenInvalid(f"No matching JWKS key for kid={kid}")
+
         payload = jwt.decode(
             token,
             rsa_key,
@@ -76,20 +78,26 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
         )
         clerk_id: str = payload.get("sub")
         if not clerk_id:
-            raise credentials_exception
-            
-    except JWTError as e:
-        logger.error(f"JWT Validation failed: {e}")
-        raise credentials_exception
+            raise ClerkTokenInvalid("Token payload missing 'sub'")
+        return clerk_id
 
-    # Auto-Upsert logic
+    except JWTError as e:
+        raise ClerkTokenInvalid(str(e)) from e
+
+
+def get_or_create_user_by_clerk_id(db: Session, clerk_id: str) -> User:
+    """Look up the User for a verified Clerk id, auto-creating one on first sight.
+
+    Shared by get_current_user (REST) and the MCP server's HTTP auth
+    (mcp_server/auth.py) so both paths create/resolve accounts identically.
+    """
     user = get_user_by_clerk_id(db, clerk_id)
     if not user:
         # Create user mapping to clerk sub
         user = User(
-            email=f"{clerk_id}@clerk.local", 
+            email=f"{clerk_id}@clerk.local",
             clerk_id=clerk_id,
-            name="Clerk Identity", 
+            name="Clerk Identity",
             hashed_password="clerk_external_auth",
             is_admin=True # Set first incoming user to Admin for ease of development migration
         )
@@ -105,8 +113,30 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
 
         db.commit()  # Single atomic commit: User + UserConfig + Portfolio
         db.refresh(user)
-        
+
     return user
+
+
+async def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    """Extract and validate the JWT from the Clerk Authorized Bearer token."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired session from Clerk",
+    )
+
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise credentials_exception
+
+    token = auth_header.split(" ")[1]
+
+    try:
+        clerk_id = verify_clerk_jwt(token)
+    except ClerkTokenInvalid as e:
+        logger.error(f"JWT Validation failed: {e}")
+        raise credentials_exception
+
+    return get_or_create_user_by_clerk_id(db, clerk_id)
 
 async def get_current_admin_user(
     user: User = Depends(get_current_user),

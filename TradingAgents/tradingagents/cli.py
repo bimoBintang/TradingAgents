@@ -65,6 +65,10 @@ Examples:
     parser.add_argument("--live", action="store_true",
                         help="Start live trading session (requires confirmation)")
 
+    # Backtesting
+    parser.add_argument("--backtest", nargs=3, metavar=("TICKER", "START", "END"),
+                        help="Run backtest: --backtest NVDA 2026-01-01 2026-03-01")
+
     # Scheduler
     parser.add_argument("--schedule", "-s", type=int, metavar="MINUTES",
                         help="Run scheduled analysis every N minutes")
@@ -116,7 +120,7 @@ def _print_banner(console):
         console.print(Panel(banner, border_style="cyan", box=box.DOUBLE))
     else:
         print("=" * 50)
-        print("🤖 TradingAgents — Multi-Agent LLM Trading Framework")
+        print("[TradingAgents] Multi-Agent LLM Trading Framework")
         print(f"   Session: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         print("=" * 50)
 
@@ -261,6 +265,22 @@ def run_cli(args=None) -> None:
             db.close()
         else:
             print("[CLI] Storage is disabled. No data to export.")
+        return
+
+    if parsed.backtest:
+        ticker, start_date, end_date = parsed.backtest
+        from tradingagents.backtesting.backtest_runner import BacktestRunner
+        runner = BacktestRunner(config=config)
+        runner.run(ticker.upper(), start_date, end_date)
+        
+        if console and _rich_available:
+            console.print(f"\n[bold green]Backtest Complete for {ticker}[/]")
+        
+        # Ensure results directory exists
+        results_dir = config.get("results_dir", "./results")
+        os.makedirs(results_dir, exist_ok=True)
+        report = runner.get_report(output_dir=results_dir)
+        print(f"\nReport saved to {results_dir}\n")
         return
 
     # ── Commands needing the full graph ───────────────────────────────

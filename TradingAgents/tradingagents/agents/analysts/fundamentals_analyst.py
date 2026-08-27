@@ -3,7 +3,7 @@ import time
 import json
 from tradingagents.agents.utils.agent_utils import get_fundamentals, get_balance_sheet, get_cashflow, get_income_statement, get_insider_transactions
 from tradingagents.agents.utils.prompt_blocks import (
-    ANTI_HALLUCINATION, SELF_CHALLENGE, CONFIDENCE_SCORING, STRICT_SYSTEM_PREAMBLE,
+    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, CROSS_REFERENCE_MANDATE, TEMPORAL_AWARENESS, SELF_CHALLENGE, CONFIDENCE_SCORING, STRICT_SYSTEM_PREAMBLE,
 )
 from tradingagents.dataflows.config import get_config
 
@@ -26,6 +26,9 @@ def create_fundamentals_analyst(llm):
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
             + ANTI_HALLUCINATION
+            + ANTI_CONFIRMATION_BIAS
+            + CROSS_REFERENCE_MANDATE
+            + TEMPORAL_AWARENESS, ANTI_CONFIRMATION_BIAS, CROSS_REFERENCE_MANDATE, TEMPORAL_AWARENESS
             + SELF_CHALLENGE
             + CONFIDENCE_SCORING
         )

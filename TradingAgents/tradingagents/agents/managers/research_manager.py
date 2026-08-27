@@ -9,6 +9,8 @@ def create_research_manager(llm, memory):
         sentiment_report = state["sentiment_report"]
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
+        synthesizer_report = state.get("synthesizer_report", "No unified briefing available.")
+        data_quality_report = state.get("data_quality_report", "Quality check pending/unavailable.")
 
         investment_debate_state = state["investment_debate_state"]
 
@@ -32,6 +34,12 @@ Take into account your past mistakes on similar situations. Use these insights t
 
 Here are your past reflections on mistakes:
 \"{past_memory_str}\"
+
+Here is the Data Quality Report for this iteration:
+{data_quality_report}
+
+Here is the Analyst Synthesizer Briefing:
+{synthesizer_report}
 
 Here is the debate:
 Debate History:

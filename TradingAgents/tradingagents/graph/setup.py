@@ -7,6 +7,7 @@ from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.agents.synthesizer import create_analyst_synthesizer
 
 from .conditional_logic import ConditionalLogic
 
@@ -53,8 +54,9 @@ class GraphSetup:
 
     def __init__(
         self,
-        quick_thinking_llm: ChatOpenAI,
-        deep_thinking_llm: ChatOpenAI,
+        fast_thinking_llm,
+        smart_thinking_llm,
+        deep_thinking_llm,
         tool_nodes: Dict[str, ToolNode],
         bull_memory,
         bear_memory,
@@ -65,7 +67,8 @@ class GraphSetup:
         enable_execution_optimizer: bool = True,
     ):
         """Initialize with required components."""
-        self.quick_thinking_llm = quick_thinking_llm
+        self.fast_thinking_llm = fast_thinking_llm
+        self.smart_thinking_llm = smart_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.bull_memory = bull_memory
@@ -77,11 +80,18 @@ class GraphSetup:
         self.enable_execution_optimizer = enable_execution_optimizer
 
     def _get_llm_for_analyst(self, analyst_type: str):
-        """Return the appropriate LLM for a given analyst type."""
-        # Deep thinkers: complex reasoning tasks
-        if analyst_type in ("macro_geo",):
-            return self.deep_thinking_llm
-        return self.quick_thinking_llm
+        """Return the appropriate LLM for a given analyst type.
+        
+        Tier 1 (Fast): Simple data parsing and factual summarization.
+        Tier 2 (Smart): Mid-level reasoning, correlations, and quant logic.
+        Tier 3 (Deep): Not used by base analysts (only managers/synthesizer).
+        """
+        # Tier 2: Smart Thinkers (requires more reasoning and synthesis)
+        if analyst_type in ("macro_geo", "quant", "correlation"):
+            return self.smart_thinking_llm
+            
+        # Tier 1: Fast Thinkers (data fetchers)
+        return self.fast_thinking_llm
 
     # ── Analyst Factory ───────────────────────────────────────────────
 
@@ -133,20 +143,22 @@ class GraphSetup:
 
         # ── Step 2: Create researcher, trader, risk nodes ─────────────
 
+        analyst_synthesizer_node = create_analyst_synthesizer(self.deep_thinking_llm)
+
         bull_researcher_node = create_bull_researcher(
-            self.quick_thinking_llm, self.bull_memory
+            self.smart_thinking_llm, self.bull_memory
         )
         bear_researcher_node = create_bear_researcher(
-            self.quick_thinking_llm, self.bear_memory
+            self.smart_thinking_llm, self.bear_memory
         )
         research_manager_node = create_research_manager(
             self.deep_thinking_llm, self.invest_judge_memory
         )
-        trader_node = create_trader(self.quick_thinking_llm, self.trader_memory)
+        trader_node = create_trader(self.smart_thinking_llm, self.trader_memory)
 
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
+        aggressive_analyst = create_aggressive_debator(self.smart_thinking_llm)
+        neutral_analyst = create_neutral_debator(self.smart_thinking_llm)
+        conservative_analyst = create_conservative_debator(self.smart_thinking_llm)
         risk_manager_node = create_risk_manager(
             self.deep_thinking_llm, self.risk_manager_memory
         )
@@ -161,6 +173,7 @@ class GraphSetup:
             workflow.add_node(f"{display_name} Analyst", subgraph)
 
         # Add post-analysis nodes
+        workflow.add_node("Analyst Synthesizer", analyst_synthesizer_node)
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)
         workflow.add_node("Research Manager", research_manager_node)
@@ -181,9 +194,12 @@ class GraphSetup:
         for name in analyst_display_names:
             workflow.add_edge(START, name)
 
-        # All analysts fan-in to Bull Researcher
+        # All analysts fan-in to Analyst Synthesizer
         for name in analyst_display_names:
-            workflow.add_edge(name, "Bull Researcher")
+            workflow.add_edge(name, "Analyst Synthesizer")
+
+        # Synthesizer to Bull Researcher
+        workflow.add_edge("Analyst Synthesizer", "Bull Researcher")
 
         # ── Step 5: Researcher debate → Trader → Risk ─────────────────
 

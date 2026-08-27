@@ -8,16 +8,33 @@ DEFAULT_CONFIG = {
         "dataflows/data_cache",
     ),
     # LLM settings
-    "llm_provider": "anthropic",
-    "deep_think_llm": "claude-sonnet-4-6",
-    "quick_think_llm": "claude-haiku-4-5",
+    "llm_provider": "anthropic",  # Default fallback provider
+    
+    "deep_think_llm_provider": "anthropic",
+    "deep_think_llm": "claude-opus-4-6",
+    
+    "smart_think_llm_provider": "anthropic",
+    "smart_think_llm": "claude-sonnet-4-6",
+    
+    # NOTE (2026-08-25): was "google"/"gemini-3.1-pro" — that requires
+    # Google Application Default Credentials (gcloud ADC), not just
+    # GOOGLE_API_KEY, and .env only has GOOGLE_API_KEY (empty). Without
+    # ADC set up, TradingAgentsGraph init fails entirely and the whole
+    # server (API + MCP) runs in degraded mode. Anthropic is used
+    # instead since ANTHROPIC_API_KEY is already configured in .env.
+    # Switch back to google once ADC is set up (see
+    # https://cloud.google.com/docs/authentication/external/set-up-adc),
+    # or point GOOGLE_API_KEY-based auth explicitly if that becomes supported.
+    "fast_think_llm_provider": "anthropic",
+    "fast_think_llm": "claude-haiku-4-5",
+    
     "backend_url": "https://api.anthropic.com",
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
     # Debate and discussion settings
-    "max_debate_rounds": 1,
-    "max_risk_discuss_rounds": 1,
+    "max_debate_rounds": 2,
+    "max_risk_discuss_rounds": 2,
     "max_recur_limit": 100,
     # Phase 9: Advanced specialist agents
     "enable_execution_optimizer": True,
@@ -33,6 +50,34 @@ DEFAULT_CONFIG = {
     # Tool-level configuration (takes precedence over category-level)
     "tool_vendors": {
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
+        # Example: "get_news": "mcp",  # Route this one tool through an external MCP server instead
+    },
+    # ── MCP Client (Fase 6) — consume an external MCP server as a data vendor ──
+    # Generic infrastructure, disabled by default: point it at any MCP
+    # server exposing get_stock_data/get_indicators/etc.-shaped tools
+    # (see tradingagents/dataflows/mcp_client.py), then select it like
+    # any other vendor via data_vendors/tool_vendors above (vendor name
+    # "mcp"), or let route_to_vendor()'s fallback chain try it last.
+    "mcp_client": {
+        "enabled": False,
+        "transport": "stdio",           # "stdio" | "streamable-http"
+        "command": None,                # stdio: e.g. "npx"
+        "args": [],                     # stdio: e.g. ["-y", "some-mcp-data-server"]
+        "env": None,                    # stdio: extra env vars for the subprocess
+        "url": None,                    # streamable-http: server URL
+        "headers": {},                  # streamable-http: e.g. auth headers
+        "tool_map": {
+            # our tool name -> the external server's tool name, if different
+            "get_stock_data": "get_stock_data",
+            "get_indicators": "get_indicators",
+            "get_fundamentals": "get_fundamentals",
+            "get_balance_sheet": "get_balance_sheet",
+            "get_cashflow": "get_cashflow",
+            "get_income_statement": "get_income_statement",
+            "get_news": "get_news",
+            "get_global_news": "get_global_news",
+            "get_insider_transactions": "get_insider_transactions",
+        },
     },
     # ── Portfolio Configuration (Phase 2) ─────────────────────────────
     "portfolio": {
@@ -40,6 +85,14 @@ DEFAULT_CONFIG = {
         "max_position_pct": 0.10,            # Max 10% of portfolio per position
         "max_total_positions": 10,            # Max concurrent open positions
         "state_file": None,                  # Path to persist portfolio (JSON), None = in-memory only
+    },
+    # ── MCP Server Configuration ──────────────────────────────────────
+    # Which account mcp_server/server.py acts as when Claude Desktop/Code
+    # calls read_portfolio/list_recent_trades/run_analysis. The MCP
+    # server has no HTTP request/JWT to authenticate with (it's a local
+    # subprocess), so identity is fixed here instead of per-request.
+    "mcp": {
+        "user_email": "",                    # Set via Settings > MCP Server, or TRADINGAGENTS_MCP_USER_EMAIL env var
     },
     # ── Position Tracker Configuration (Phase 2) ─────────────────────
     "position_tracker": {

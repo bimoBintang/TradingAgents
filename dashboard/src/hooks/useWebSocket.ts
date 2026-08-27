@@ -3,6 +3,8 @@
  *
  * usePortfolioWS() — connects to ws /ws/portfolio, auto-reconnects,
  * falls back to SWR polling if WebSocket fails.
+ * useChartControlWS() — connects to ws /ws/chart-control (Fase 7):
+ * reports this tab's chart state, receives MCP-driven chart commands.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -42,16 +44,26 @@ export function usePortfolioWS() {
   const [status, setStatus] = useState<WsStatus>('connecting');
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef(0);
-  const mountedRef = useRef(true);
+  // Generation counter — invalidates any in-flight async connect() chain
+  // from a superseded effect run. A plain boolean "mountedRef" is not
+  // enough under StrictMode: its double mount/cleanup/mount cycle resets
+  // the flag back to true while the FIRST connect() call is still
+  // awaiting getToken(), letting it resume and open a second, duplicate
+  // WebSocket whose events race the real one — flooding OverviewPage's
+  // connection-status badge with rapid, out-of-order re-renders that
+  // triggered the "insertBefore" DOM crash right after sign-in.
+  const generationRef = useRef(0);
 
-  const connect = useCallback(async () => {
-    if (!mountedRef.current) return;
+  const connect = useCallback(async (generation: number) => {
+    if (generationRef.current !== generation) return;
 
     const token = await getToken();
+    if (generationRef.current !== generation) return; // superseded while awaiting
+
     if (!token) {
       // No auth token — wait and retry
       setStatus('disconnected');
-      setTimeout(() => connect(), 3000);
+      setTimeout(() => connect(generation), 3000);
       return;
     }
 
@@ -63,13 +75,13 @@ export function usePortfolioWS() {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!mountedRef.current) return;
+        if (generationRef.current !== generation) return;
         setStatus('connected');
         retryRef.current = 0; // Reset backoff on success
       };
 
       ws.onmessage = (event) => {
-        if (!mountedRef.current) return;
+        if (generationRef.current !== generation) return;
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'portfolio_update' && msg.data) {
@@ -81,12 +93,12 @@ export function usePortfolioWS() {
       };
 
       ws.onclose = () => {
-        if (!mountedRef.current) return;
+        if (generationRef.current !== generation) return;
         setStatus('disconnected');
         // Exponential backoff: 1s, 2s, 4s, 8s, ... capped at 30s
         const delay = Math.min(1000 * 2 ** retryRef.current, MAX_RECONNECT_DELAY);
         retryRef.current += 1;
-        setTimeout(() => connect(), delay);
+        setTimeout(() => connect(generation), delay);
       };
 
       ws.onerror = () => {
@@ -94,17 +106,18 @@ export function usePortfolioWS() {
       };
     } catch {
       setStatus('disconnected');
-      setTimeout(() => connect(), 3000);
+      setTimeout(() => connect(generation), 3000);
     }
   }, []);
 
   useEffect(() => {
-    mountedRef.current = true;
-    connect();
+    const generation = ++generationRef.current;
+    connect(generation);
 
     return () => {
-      mountedRef.current = false;
+      generationRef.current += 1; // invalidate this generation
       wsRef.current?.close();
+      wsRef.current = null;
     };
   }, [connect]);
 
@@ -125,16 +138,18 @@ export function useAnalysisWS(taskId: string | null) {
   const [data, setData] = useState<AnalysisStatus | null>(null);
   const [status, setStatus] = useState<WsStatus>('disconnected');
   const wsRef = useRef<WebSocket | null>(null);
-  const mountedRef = useRef(true);
+  // Same StrictMode-safe generation guard as usePortfolioWS — see the
+  // comment there for why a plain "mountedRef" boolean isn't sufficient.
+  const generationRef = useRef(0);
 
   useEffect(() => {
-    mountedRef.current = true;
+    const generation = ++generationRef.current;
 
     if (!taskId) return;
 
     const connectWs = async () => {
       const token = await getToken();
-      if (!token) return;
+      if (!token || generationRef.current !== generation) return;
 
       const url = `${getWsBase()}/ws/analysis/${taskId}?token=${token}`;
       setStatus('connecting');
@@ -143,11 +158,11 @@ export function useAnalysisWS(taskId: string | null) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (mountedRef.current) setStatus('connected');
+        if (generationRef.current === generation) setStatus('connected');
       };
 
       ws.onmessage = (event) => {
-        if (!mountedRef.current) return;
+        if (generationRef.current !== generation) return;
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'analysis_status') {
@@ -161,17 +176,120 @@ export function useAnalysisWS(taskId: string | null) {
       };
 
       ws.onclose = () => {
-        if (mountedRef.current) setStatus('disconnected');
+        if (generationRef.current === generation) setStatus('disconnected');
       };
     };
 
     connectWs();
 
     return () => {
-      mountedRef.current = false;
+      generationRef.current += 1;
       wsRef.current?.close();
+      wsRef.current = null;
     };
   }, [taskId]);
 
   return { data, status };
+}
+
+// ── useChartControlWS ────────────────────────────────────────────────
+//
+// Fase 7 — lets an MCP client (Claude, via mcp_server/tools_chart.py)
+// read/drive THIS tab's chart. Bidirectional over one connection:
+//   outgoing: {"type": "chart_state", "data": {...}} — call sendState()
+//     whenever ticker/timeframe/indicator changes, so MCP's
+//     get_chart_state() tool has something current to read.
+//   incoming: {"type": "chart_command", "action": ..., ...} — dispatched
+//     to the matching handler in ChartControlHandlers.
+//
+// Best-effort by design: if this channel never connects (e.g. an
+// ad-blocker, or the backend doesn't have it yet), the chart itself
+// still works fully — this only adds remote-control, nothing the UI
+// depends on.
+
+export interface ChartControlHandlers {
+  onSetView?: (ticker: string, timeframe?: string | null, indicator?: string | null) => void;
+  onAnnotatePatterns?: (ticker: string, timeframe: string) => void;
+  onHighlightPriceLevel?: (ticker: string, price: number, label: string, color?: string) => void;
+  onClearAiHighlights?: (ticker: string) => void;
+}
+
+interface ChartStateReport {
+  ticker: string;
+  timeframe?: string;
+  activeIndicator?: string;
+}
+
+const CHART_CONTROL_RETRY_DELAY = 5000;
+
+export function useChartControlWS(handlers: ChartControlHandlers) {
+  const wsRef = useRef<WebSocket | null>(null);
+  const generationRef = useRef(0);
+  // Ref mirror of the latest handlers so the WS's onmessage closure
+  // (bound once per connection) always calls current callbacks without
+  // needing to reconnect every time a handler identity changes.
+  const handlersRef = useRef(handlers);
+  handlersRef.current = handlers;
+
+  const sendState = useCallback((state: ChartStateReport) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'chart_state', data: state }));
+    }
+  }, []);
+
+  useEffect(() => {
+    const generation = ++generationRef.current;
+
+    const connect = async () => {
+      if (generationRef.current !== generation) return;
+      const token = await getToken();
+      if (!token || generationRef.current !== generation) return;
+
+      const ws = new WebSocket(`${getWsBase()}/ws/chart-control?token=${token}`);
+      wsRef.current = ws;
+
+      ws.onmessage = (event) => {
+        if (generationRef.current !== generation) return;
+        let msg: any;
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (msg.type !== 'chart_command') return;
+
+        const h = handlersRef.current;
+        switch (msg.action) {
+          case 'set_view':
+            h.onSetView?.(msg.ticker, msg.timeframe, msg.indicator);
+            break;
+          case 'annotate_patterns':
+            h.onAnnotatePatterns?.(msg.ticker, msg.timeframe ?? '1d');
+            break;
+          case 'highlight_price_level':
+            h.onHighlightPriceLevel?.(msg.ticker, msg.price, msg.label, msg.color);
+            break;
+          case 'clear_ai_highlights':
+            h.onClearAiHighlights?.(msg.ticker);
+            break;
+        }
+      };
+
+      ws.onclose = () => {
+        if (generationRef.current !== generation) return;
+        setTimeout(connect, CHART_CONTROL_RETRY_DELAY);
+      };
+    };
+
+    connect();
+
+    return () => {
+      generationRef.current += 1;
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  }, []);
+
+  return { sendState };
 }

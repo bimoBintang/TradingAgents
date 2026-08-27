@@ -36,15 +36,33 @@ dependencies = [
     "tradingview-ta>=3.3.0",
     "psycopg2-binary>=2.9.9",
     "pgvector>=0.2.5",
+    "scikit-learn>=1.3.0",
 ]
 
 [project.optional-dependencies]
 crypto = ["ccxt>=4.0.0"]
 stocks = ["alpaca-py>=0.31.0"]
 brokers = ["ccxt>=4.0.0", "alpaca-py>=0.31.0"]
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-dotenv>=1.0.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "slowapi>=0.1.9",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "psycopg2-binary>=2.9.0",
+    "celery[redis]>=5.3.0",
+    "prometheus-client>=0.20.0",
+    "prometheus-fastapi-instrumentator>=6.0.0",
+]
+mcp = ["mcp[cli]>=1.2.0"]
+test = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0"]
 
 [project.scripts]
 tradingagents = "cli.main:app"
+tradingagents-mcp = "mcp_server.server:main"
 
 [tool.setuptools.packages.find]
-include = ["tradingagents*", "cli*"]
+include = ["tradingagents*", "cli*", "mcp_server*"]

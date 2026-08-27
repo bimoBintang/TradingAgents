@@ -72,7 +72,7 @@ class SignalProcessor:
             return trade_decision.model_dump_json(indent=2)
 
         # Fallback: extract simple action
-        return self._extract_simple_action(full_signal)
+        return self._extract_simple_action(full_signal, ticker)
 
     def extract_structured_decision(
         self, full_signal: str, ticker: str = ""
@@ -114,8 +114,8 @@ class SignalProcessor:
             print(f"[SignalProcessor] Structured extraction failed: {e}")
             return None
 
-    def _extract_simple_action(self, full_signal: str) -> str:
-        """Fallback: Extract simple BUY/SELL/HOLD from text."""
+    def _extract_simple_action(self, full_signal: str, ticker: str = "") -> str:
+        """Fallback: Extract simple action and wrap in a safe TradeDecision."""
         messages = [
             (
                 "system",
@@ -124,4 +124,19 @@ class SignalProcessor:
             ),
             ("human", full_signal),
         ]
-        return self.quick_thinking_llm.invoke(messages).content.strip()
+        action = self.quick_thinking_llm.invoke(messages).content.strip().upper()
+
+        if action not in ["BUY", "SELL", "HOLD", "STRONG_BUY", "STRONG_SELL"]:
+            action = "HOLD"
+
+        decision = TradeDecision(
+            action=action,
+            ticker=ticker,
+            confidence_score=0.5,  # Conservative default
+            quantity_pct=0.05 if "BUY" in action else 0.0,
+            order_type="MARKET",
+            stop_loss_pct=0.05 if action != "HOLD" else None,
+            take_profit_pct=0.10 if action != "HOLD" else None,
+            reasoning="Fallback decision extraction.",
+        )
+        return decision.model_dump_json(indent=2)

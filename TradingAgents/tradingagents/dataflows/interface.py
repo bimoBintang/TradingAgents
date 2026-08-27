@@ -1,4 +1,7 @@
+import logging
 from typing import Annotated
+
+logger = logging.getLogger(__name__)
 
 # Import from vendor-specific modules
 from .y_finance import (
@@ -49,6 +52,8 @@ from .tradingview import (
     get_tradingview_indicators,
     TradingViewRateLimitError,
 )
+from . import mcp_client as _mcp_client
+from .mcp_client import MCPVendorError, MCPVendorNotConfigured
 
 # Configuration and routing logic
 from .config import get_config
@@ -92,6 +97,7 @@ VENDOR_LIST = [
     "messari",
     "coingecko",
     "tradingview",
+    "mcp",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -102,12 +108,14 @@ VENDOR_METHODS = {
         "yfinance": get_YFin_data_online,
         "messari": get_messari_stock,
         "coingecko": get_coingecko_stock,
+        "mcp": _mcp_client.get_stock_data,
     },
     # technical_indicators
     "get_indicators": {
         "tradingview": get_tradingview_indicators,
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
+        "mcp": _mcp_client.get_indicators,
     },
     # fundamental_data
     "get_fundamentals": {
@@ -115,24 +123,28 @@ VENDOR_METHODS = {
         "yfinance": get_yfinance_fundamentals,
         "messari": get_messari_fundamentals,
         "coingecko": get_coingecko_fundamentals,
+        "mcp": _mcp_client.get_fundamentals,
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
         "messari": get_messari_balance_sheet,
         "coingecko": get_coingecko_balance_sheet,
+        "mcp": _mcp_client.get_balance_sheet,
     },
     "get_cashflow": {
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
         "messari": get_messari_cashflow,
         "coingecko": get_coingecko_cashflow,
+        "mcp": _mcp_client.get_cashflow,
     },
     "get_income_statement": {
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
         "messari": get_messari_income_statement,
         "coingecko": get_coingecko_income_statement,
+        "mcp": _mcp_client.get_income_statement,
     },
     # news_data
     "get_news": {
@@ -140,18 +152,21 @@ VENDOR_METHODS = {
         "yfinance": get_news_yfinance,
         "messari": get_messari_news,
         "coingecko": get_coingecko_news,
+        "mcp": _mcp_client.get_news,
     },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
         "messari": get_messari_global_news,
         "coingecko": get_coingecko_global_news,
+        "mcp": _mcp_client.get_global_news,
     },
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
         "messari": get_messari_insider_transactions,
         "coingecko": get_coingecko_insider_transactions,
+        "mcp": _mcp_client.get_insider_transactions,
     },
 }
 
@@ -217,5 +232,10 @@ def route_to_vendor(method: str, *args, **kwargs):
             return impl_func(*args, **call_kwargs)
         except (AlphaVantageRateLimitError, MessariRateLimitError, CoinGeckoRateLimitError, TradingViewRateLimitError):
             continue  # Rate limits trigger fallback
+        except MCPVendorNotConfigured:
+            continue  # mcp vendor not set up — same fallback treatment as a rate limit
+        except MCPVendorError as e:
+            logger.warning("MCP vendor call failed for '%s', falling back: %s", method, e)
+            continue
 
     raise RuntimeError(f"No available vendor for '{method}'")

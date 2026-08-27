@@ -17,6 +17,8 @@ def create_bear_researcher(llm, memory):
         sentiment_report = state["sentiment_report"]
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
+        synthesizer_report = state.get("synthesizer_report", "No unified briefing available.")
+        data_quality_report = state.get("data_quality_report", "Quality check pending/unavailable.")
 
         curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
         past_memories = memory.get_memories(curr_situation, n_matches=2)
@@ -41,6 +43,8 @@ Key points to focus on:
 {ANTI_CONFIRMATION_BIAS}
 
 Resources available:
+Data Quality Report: {data_quality_report}
+Analyst Synthesizer Briefing: {synthesizer_report}
 Market research report: {market_research_report}
 Social media sentiment report: {sentiment_report}
 Latest world affairs news: {news_report}

@@ -1,8 +1,10 @@
 """WebSocket endpoints for real-time dashboard updates.
 
 Endpoints:
-    ws /ws/portfolio    — streams portfolio state every 5 seconds
-    ws /ws/analysis/{id} — streams task progress until completed/failed
+    ws /ws/portfolio      — streams portfolio state every 5 seconds
+    ws /ws/analysis/{id}  — streams task progress until completed/failed
+    ws /ws/chart-control  — bidirectional: dashboard reports chart state,
+                            MCP-driven commands (api/chart_control.py) pushed in
 
 Auth: JWT passed via ?token= query parameter.
 """
@@ -12,8 +14,9 @@ import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-from jose import jwt, JWTError
 
+from api import chart_control
+from api.auth import ClerkTokenInvalid, verify_clerk_jwt
 from api.ws_manager import manager
 from api.database import SessionLocal
 from api.models import User, PortfolioState, Position, TaskResult
@@ -28,40 +31,25 @@ PORTFOLIO_PUSH_INTERVAL = 5  # seconds
 # ── Auth helper ───────────────────────────────────────────────────────
 
 async def _authenticate_ws(token: str) -> int | None:
-    """Validate JWT token and return user_id, or None if invalid."""
+    """Validate JWT token and return user_id, or None if invalid.
+
+    Reuses api/auth.py's verify_clerk_jwt — this used to carry its own
+    copy of the JWKS-lookup/decode logic (a second one, alongside
+    api/auth.py's and, before Fase 4, a would-be third in
+    mcp_server/auth.py) which had already drifted slightly (no `kty`
+    fallback handling differences aside). One implementation now.
+    """
     if not token:
         return None
     try:
-        from api.auth import get_clerk_jwks
-        jwks = get_clerk_jwks()
-        unverified_header = jwt.get_unverified_header(token)
-        kid = unverified_header.get("kid")
-
-        rsa_key = {}
-        for key in jwks.get("keys", []):
-            if key["kid"] == kid:
-                rsa_key = {
-                    "kty": key["kty"], "kid": key["kid"],
-                    "use": key["use"], "n": key["n"], "e": key["e"],
-                }
-                break
-
-        if not rsa_key:
-            return None
-
-        payload = jwt.decode(token, rsa_key, algorithms=["RS256"], options={"verify_aud": False})
-        clerk_id = payload.get("sub")
-        if not clerk_id:
-            return None
-
-        # Look up user in DB
-        with SessionLocal() as db:
-            user = db.query(User).filter(User.clerk_id == clerk_id).first()
-            return user.id if user else None
-
-    except (JWTError, Exception) as e:
+        clerk_id = verify_clerk_jwt(token)
+    except ClerkTokenInvalid as e:
         logger.debug("WS auth failed: %s", e)
         return None
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.clerk_id == clerk_id).first()
+        return user.id if user else None
 
 
 # ── Portfolio Feed ────────────────────────────────────────────────────
@@ -175,5 +163,42 @@ async def ws_analysis(websocket: WebSocket, task_id: str, token: str = Query("")
         pass
     except Exception as e:
         logger.error("WS analysis error (user=%d, task=%s): %s", user_id, task_id, e)
+    finally:
+        await manager.disconnect(websocket, user_id)
+
+
+# ── Chart Control (Fase 7) ───────────────────────────────────────────
+#
+# Bidirectional, unlike the two feeds above:
+#   dashboard → backend: {"type": "chart_state", "data": {ticker, timeframe, activeIndicator}}
+#       Cached in api/chart_control.py so MCP's get_chart_state() tool
+#       (and GET /api/chart-control/state) can read it back.
+#   backend → dashboard: {"type": "chart_command", "action": ..., ...}
+#       Pushed by api/chart_control.py (called from MCP tools or the
+#       REST router) via the same ConnectionManager used above.
+
+@router.websocket("/ws/chart-control")
+async def ws_chart_control(websocket: WebSocket, token: str = Query("")):
+    """Dashboard-side channel for MCP-driven chart control.
+
+    Only reports/receives — this endpoint itself never touches the DB
+    or a broker; it's ephemeral UI state, not domain data. See
+    api/chart_control.py's module docstring for the full picture.
+    """
+    user_id = await _authenticate_ws(token)
+    if user_id is None:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
+    await manager.connect(websocket, user_id)
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            if msg.get("type") == "chart_state":
+                chart_control.record_chart_state(user_id, msg.get("data") or {})
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error("WS chart-control error (user=%d): %s", user_id, e)
     finally:
         await manager.disconnect(websocket, user_id)

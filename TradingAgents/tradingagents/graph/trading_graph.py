@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 from langgraph.prebuilt import ToolNode
 
+from tradingagents.execution.order_models import OrderResult
 from tradingagents.llm_clients import create_llm_client
 
 from tradingagents.agents import *
@@ -220,20 +221,27 @@ class TradingAgentsGraph:
             llm_kwargs["callbacks"] = self.callbacks
 
         deep_client = create_llm_client(
-            provider=self.config["llm_provider"],
-            model=self.config["deep_think_llm"],
+            provider=self.config.get("deep_think_llm_provider", self.config.get("llm_provider", "anthropic")),
+            model=self.config.get("deep_think_llm", "claude-3-opus-20240229"),
             base_url=self.config.get("backend_url"),
             **llm_kwargs,
         )
-        quick_client = create_llm_client(
-            provider=self.config["llm_provider"],
-            model=self.config["quick_think_llm"],
+        smart_client = create_llm_client(
+            provider=self.config.get("smart_think_llm_provider", self.config.get("llm_provider", "anthropic")),
+            model=self.config.get("smart_think_llm", "claude-3-5-sonnet-20241022"),
+            base_url=self.config.get("backend_url"),
+            **llm_kwargs,
+        )
+        fast_client = create_llm_client(
+            provider=self.config.get("fast_think_llm_provider", self.config.get("llm_provider", "google")),
+            model=self.config.get("fast_think_llm", "gemini-3.1-pro"),
             base_url=self.config.get("backend_url"),
             **llm_kwargs,
         )
 
         self.deep_thinking_llm = deep_client.get_llm()
-        self.quick_thinking_llm = quick_client.get_llm()
+        self.smart_thinking_llm = smart_client.get_llm()
+        self.fast_thinking_llm = fast_client.get_llm()
 
         # Initialize memories (Phase 5: with optional database persistence)
         mem_config = {"max_memory_items_per_agent": storage_cfg.get("max_memory_items_per_agent", 500)}
@@ -321,6 +329,9 @@ class TradingAgentsGraph:
                 atr_timeframe=exec_cfg.get("atr_timeframe", "1h"),
                 order_flow_config=order_flow_cfg,
             )
+            
+            # Hook up automated reflection callback
+            self.execution_engine.on_position_closed = self._on_position_closed
 
             # Phase 5b: Reconcile local portfolio with exchange on startup
             if exec_cfg.get("reconcile_on_startup", True):
@@ -339,7 +350,8 @@ class TradingAgentsGraph:
             max_risk_discuss_rounds=self.config["max_risk_discuss_rounds"],
         )
         self.graph_setup = GraphSetup(
-            self.quick_thinking_llm,
+            self.fast_thinking_llm,
+            self.smart_thinking_llm,
             self.deep_thinking_llm,
             self.tool_nodes,
             self.bull_memory,
@@ -353,12 +365,12 @@ class TradingAgentsGraph:
 
         self.propagator = Propagator()
         self.reflector = Reflector(
-            self.quick_thinking_llm,
+            self.smart_thinking_llm,
             database=self.database,
             session_id=self.session_id,
             max_reflections_loaded=storage_cfg.get("max_reflections_loaded", 20),
         )
-        self.signal_processor = SignalProcessor(self.quick_thinking_llm)
+        self.signal_processor = SignalProcessor(self.fast_thinking_llm)
 
         # State tracking
         self.curr_state = None
@@ -600,22 +612,36 @@ class TradingAgentsGraph:
         ) as f:
             json.dump(self.log_states_dict, f, indent=4)
 
-    def reflect_and_remember(self, returns_losses):
+    def _on_position_closed(self, ticker: str, pnl: float):
+        """Callback from ExecutionEngine when a position is closed."""
+        logger.info("Position closed for %s with PnL %s. Triggering reflection.", ticker, pnl)
+        state = getattr(self, "curr_state", None)
+        if state and state.get("company_of_interest") == ticker:
+            self.reflect_and_remember(pnl, state)
+        else:
+            logger.info("Skipping reflection for %s: no active state matches this ticker.", ticker)
+
+    def reflect_and_remember(self, returns_losses, state=None):
         """Reflect on decisions and update memory based on returns."""
+        state_to_use = state or getattr(self, "curr_state", None)
+        if not state_to_use:
+            logger.warning("No state available for reflection. Skipping.")
+            return
+
         self.reflector.reflect_bull_researcher(
-            self.curr_state, returns_losses, self.bull_memory
+            state_to_use, returns_losses, self.bull_memory
         )
         self.reflector.reflect_bear_researcher(
-            self.curr_state, returns_losses, self.bear_memory
+            state_to_use, returns_losses, self.bear_memory
         )
         self.reflector.reflect_trader(
-            self.curr_state, returns_losses, self.trader_memory
+            state_to_use, returns_losses, self.trader_memory
         )
         self.reflector.reflect_invest_judge(
-            self.curr_state, returns_losses, self.invest_judge_memory
+            state_to_use, returns_losses, self.invest_judge_memory
         )
         self.reflector.reflect_risk_manager(
-            self.curr_state, returns_losses, self.risk_manager_memory
+            state_to_use, returns_losses, self.risk_manager_memory
         )
 
     def process_signal(self, full_signal):

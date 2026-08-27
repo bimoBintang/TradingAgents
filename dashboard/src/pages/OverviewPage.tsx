@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useCallback, useRef } from 'react';
 import { ChartPanel } from '../components/dashboard/ChartPanel';
 import { TradingViewPanel } from '../components/dashboard/TradingViewPanel';
+import type { ChartPanelHandle } from '../components/dashboard/ChartPanel';
 import { MarketSelector } from '../components/dashboard/MarketSelector';
 import { Card, CardContent } from '../components/ui/Card';
 import { Alert, AlertDescription } from '../components/ui/Alert';
@@ -9,7 +10,7 @@ import { OpenPositionsPanel } from '../components/dashboard/OpenPositionsPanel';
 import { AgentInsights } from '../components/dashboard/AgentInsights';
 import PredictionPanel from '../components/dashboard/PredictionPanel';
 import { usePortfolio } from '../hooks/useApi';
-import { usePortfolioWS } from '../hooks/useWebSocket';
+import { usePortfolioWS, useChartControlWS } from '../hooks/useWebSocket';
 import { Wallet, TrendingUp, TrendingDown, Target, ShieldAlert, Activity, DollarSign, Wifi, WifiOff } from 'lucide-react';
 
 interface OverviewPageProps {
@@ -20,6 +21,27 @@ interface OverviewPageProps {
 export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setActiveTicker }) => {
   // WebSocket for real-time portfolio updates
   const { data: wsPortfolio, status: wsStatus } = usePortfolioWS();
+
+  // Fase 7 — MCP-driven chart control. ChartPanel owns timeframe/
+  // indicator state internally, so those commands go through this ref;
+  // `ticker` is owned here (activeTicker), so set_view's ticker just
+  // calls setActiveTicker directly.
+  const chartPanelRef = useRef<ChartPanelHandle>(null);
+  const { sendState: sendChartState } = useChartControlWS({
+    onSetView: (ticker, timeframe, indicator) => {
+      if (ticker) setActiveTicker(ticker);
+      if (timeframe) chartPanelRef.current?.setTimeframe(timeframe);
+      if (indicator) chartPanelRef.current?.setActiveIndicator(indicator);
+    },
+    onAnnotatePatterns: () => chartPanelRef.current?.triggerPatternDetection(),
+    onHighlightPriceLevel: (_ticker, price, label, color) =>
+      chartPanelRef.current?.highlightPriceLevel(price, label, color),
+    onClearAiHighlights: () => chartPanelRef.current?.clearAiHighlights(),
+  });
+  const handleChartStateChange = useCallback(
+    (state: { ticker: string; timeframe: string; activeIndicator: string }) => sendChartState(state),
+    [sendChartState],
+  );
   // SWR fallback (also used while WS is connecting)
   const { data: swrPortfolio, loading: pLoading, error: pError } = usePortfolio();
   // Use WS data when connected, otherwise SWR
@@ -158,7 +180,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setAct
 
         </div>
           {/* NEW FULL WIDTH CHART PANEL */}
-          <ChartPanel ticker={activeTicker} />
+          <ChartPanel ref={chartPanelRef} ticker={activeTicker} onStateChange={handleChartStateChange} />
 
           {/* TRADINGVIEW TELEMETRY & VISION PANEL */}
           <TradingViewPanel activeTicker={activeTicker} className="mt-4" />

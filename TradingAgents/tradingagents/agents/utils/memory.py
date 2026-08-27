@@ -77,7 +77,7 @@ class FinancialSituationMemory:
             self.save_to_db()
 
     def get_memories(self, current_situation: str, n_matches: int = 1) -> List[dict]:
-        """Find matching recommendations using BM25 similarity.
+        """Find matching recommendations using BM25 similarity with time decay.
 
         Args:
             current_situation: The current financial situation to match against
@@ -93,7 +93,16 @@ class FinancialSituationMemory:
         query_tokens = self._tokenize(current_situation)
 
         # Get BM25 scores for all documents
-        scores = self.bm25.get_scores(query_tokens)
+        raw_scores = self.bm25.get_scores(query_tokens)
+
+        # Apply position-based time decay (assumes index 0 is oldest, N is newest)
+        # We give a slight boost to newer memories (up to 20% boost)
+        scores = []
+        n_docs = len(self.documents)
+        for i, score in enumerate(raw_scores):
+            # decay_factor goes from 0.8 (oldest) to 1.0 (newest)
+            decay_factor = 0.8 + (0.2 * (i / max(1, n_docs - 1)))
+            scores.append(score * decay_factor)
 
         # Get top-n indices sorted by score (descending)
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n_matches]
@@ -153,6 +162,8 @@ class FinancialSituationMemory:
             pairs = self.db.load_memories(agent_name=self.name, limit=limit)
 
             if pairs:
+                # Reverse pairs so index 0 is oldest, consistent with append()
+                pairs.reverse()
                 self.documents = [sit for sit, _ in pairs]
                 self.recommendations = [adv for _, adv in pairs]
                 self._rebuild_index()

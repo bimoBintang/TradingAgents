@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useMemo } from 'react';
 import { createChart, ColorType, AreaSeries, LineSeries } from 'lightweight-charts';
+import type { ISeriesApi } from 'lightweight-charts';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import { cx } from '../../utils/cx';
 import { useEquityCurve, useTrades } from '../../hooks/useApi';
@@ -13,6 +14,8 @@ import { Loader2 } from 'lucide-react';
 export const EquityCurveChart: React.FC<{ className?: string }> = ({ className }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
+  const areaSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
+  const ddSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const { data: backendCurve, loading: curveLoading } = useEquityCurve();
   const { data: trades, loading: tradesLoading } = useTrades();
 
@@ -74,8 +77,12 @@ export const EquityCurveChart: React.FC<{ className?: string }> = ({ className }
     return { equityData: eq, drawdownData: dd };
   }, [backendCurve, trades]);
 
+  // 1. Initialize chart (run ONCE — mirrors ChartPanel.tsx's pattern).
+  // Recreating the chart on every data update raced with React's own
+  // reconciliation during the sign-in transition and caused
+  // "Failed to execute 'insertBefore' on 'Node'" crashes.
   useEffect(() => {
-    if (!chartContainerRef.current || equityData.length === 0) return;
+    if (!chartContainerRef.current) return;
 
     const chart = createChart(chartContainerRef.current, {
       layout: {
@@ -95,38 +102,27 @@ export const EquityCurveChart: React.FC<{ className?: string }> = ({ className }
 
     chartRef.current = chart;
 
-    const isPositive = equityData[equityData.length - 1].value >= equityData[0].value;
-
-    // Equity area series
-    const areaSeries = chart.addSeries(AreaSeries, {
-      lineColor: isPositive ? '#10b981' : '#ef4444',
-      topColor: isPositive ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)',
-      bottomColor: isPositive ? 'rgba(16, 185, 129, 0.0)' : 'rgba(239, 68, 68, 0.0)',
+    areaSeriesRef.current = chart.addSeries(AreaSeries, {
+      lineColor: '#10b981',
+      topColor: 'rgba(16, 185, 129, 0.3)',
+      bottomColor: 'rgba(16, 185, 129, 0.0)',
       lineWidth: 2,
       crosshairMarkerVisible: true,
       priceLineVisible: false,
     });
-    areaSeries.setData(equityData);
 
-    // Drawdown line overlay (if data available)
-    if (drawdownData.length > 0) {
-      const ddSeries = chart.addSeries(LineSeries, {
-        color: 'rgba(239, 68, 68, 0.5)',
-        lineWidth: 1,
-        priceLineVisible: false,
-        crosshairMarkerVisible: false,
-        priceScaleId: 'drawdown',
-        lastValueVisible: false,
-      });
-      ddSeries.setData(drawdownData);
-
-      chart.priceScale('drawdown').applyOptions({
-        scaleMargins: { top: 0.7, bottom: 0.0 },
-        borderVisible: false,
-      });
-    }
-
-    chart.timeScale().fitContent();
+    ddSeriesRef.current = chart.addSeries(LineSeries, {
+      color: 'rgba(239, 68, 68, 0.5)',
+      lineWidth: 1,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+      priceScaleId: 'drawdown',
+      lastValueVisible: false,
+    });
+    chart.priceScale('drawdown').applyOptions({
+      scaleMargins: { top: 0.7, bottom: 0.0 },
+      borderVisible: false,
+    });
 
     const handleResize = () => {
       if (chartContainerRef.current) {
@@ -141,7 +137,26 @@ export const EquityCurveChart: React.FC<{ className?: string }> = ({ className }
       window.removeEventListener('resize', handleResize);
       chart.remove();
       chartRef.current = null;
+      areaSeriesRef.current = null;
+      ddSeriesRef.current = null;
     };
+  }, []);
+
+  // 2. Update series data whenever equity/drawdown data changes.
+  useEffect(() => {
+    if (!chartRef.current || !areaSeriesRef.current || equityData.length === 0) return;
+
+    const isPositive = equityData[equityData.length - 1].value >= equityData[0].value;
+    areaSeriesRef.current.applyOptions({
+      lineColor: isPositive ? '#10b981' : '#ef4444',
+      topColor: isPositive ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)',
+      bottomColor: isPositive ? 'rgba(16, 185, 129, 0.0)' : 'rgba(239, 68, 68, 0.0)',
+    });
+    areaSeriesRef.current.setData(equityData);
+
+    ddSeriesRef.current?.setData(drawdownData);
+
+    chartRef.current.timeScale().fitContent();
   }, [equityData, drawdownData]);
 
   const initialBal = equityData[0]?.value ?? 0;

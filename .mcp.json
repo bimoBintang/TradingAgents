@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "tradingagents": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "C:\\TradingAgents\\TradingAgents",
+        "python",
+        "-m",
+        "mcp_server.server"
+      ]
+    }
+  }
+}
