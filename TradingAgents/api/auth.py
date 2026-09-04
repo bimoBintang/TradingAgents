@@ -136,7 +136,14 @@ async def get_current_user(request: Request, db: Session = Depends(get_db)) -> U
         logger.error(f"JWT Validation failed: {e}")
         raise credentials_exception
 
-    return get_or_create_user_by_clerk_id(db, clerk_id)
+    user = get_or_create_user_by_clerk_id(db, clerk_id)
+
+    # Stashed for the rate limiter, which otherwise keys on IP. IP is the
+    # wrong unit for a multi-tenant SaaS: everyone behind one office NAT
+    # shares a quota, while one account rotating IPs has none. slowapi's
+    # key_func reads this back via request.state — see api/limiter.py.
+    request.state.user_id = user.id
+    return user
 
 async def get_current_admin_user(
     user: User = Depends(get_current_user),

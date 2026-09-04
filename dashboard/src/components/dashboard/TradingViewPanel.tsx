@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
-import { Activity, ShieldCheck, Cpu, Code, Eye, RefreshCw, Send, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Activity, ShieldCheck, Cpu, Code, Eye, EyeOff, RefreshCw, Send, CheckCircle2, AlertCircle } from 'lucide-react';
 import { cx } from '../../utils/cx';
 
 interface TradingViewPanelProps {
@@ -68,9 +68,16 @@ if (rsiVal > 70)
     setInjectMessage(null);
     setInjectSuccess(null);
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const clerk = (window as any).Clerk;
+      if (clerk && clerk.session) {
+        const token = await clerk.session.getToken();
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const res = await fetch('http://localhost:8000/api/tradingview/pinescript', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ code: pineCode, script_name: 'CMAOP_RSI_Breakout' }),
       });
       const data = await res.json();
@@ -193,28 +200,43 @@ if (rsiVal > 70)
                 <Eye size={14} className="text-cyan-400" /> ChartVisionAgent Report
               </span>
               <span className="text-xs text-cyan-400 font-bold">
-                {vision?.visual_confidence ? `${(vision.visual_confidence * 100).toFixed(0)}% Confidence` : '--'}
+                {vision?.visual_confidence != null ? `${(vision.visual_confidence * 100).toFixed(0)}% Confidence` : '--'}
               </span>
             </div>
 
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between items-center bg-slate-900/40 px-3 py-1.5 rounded-lg">
-                <span className="text-slate-400">Primary Trend:</span>
-                <span className={`font-bold ${vision?.primary_trend === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {vision?.primary_trend || 'SIDEWAYS'}
+            {vision?.mode === 'UNAVAILABLE' ? (
+              // Honest empty state — no screenshot to analyze (CDP not
+              // connected, no client-side fallback screenshot either).
+              // Previously this fell through to fabricated defaults
+              // ('SIDEWAYS' trend, 'Analyzing...' pattern) instead of
+              // saying plainly that nothing was actually analyzed.
+              <div className="flex flex-col items-center justify-center gap-1.5 py-4 text-center">
+                <EyeOff size={18} className="text-slate-500" />
+                <span className="text-xs font-semibold text-slate-400">Vision analysis unavailable</span>
+                <span className="text-[10px] text-slate-500 max-w-[220px]" title={vision?.rationale}>
+                  No chart screenshot to analyze right now
                 </span>
               </div>
-              <div className="flex justify-between items-center bg-slate-900/40 px-3 py-1.5 rounded-lg">
-                <span className="text-slate-400">Chart Pattern:</span>
-                <span className="font-medium text-slate-200">{vision?.chart_pattern || 'Analyzing...'}</span>
+            ) : (
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between items-center bg-slate-900/40 px-3 py-1.5 rounded-lg">
+                  <span className="text-slate-400">Primary Trend:</span>
+                  <span className={`font-bold ${vision?.primary_trend === 'BULLISH' ? 'text-emerald-400' : vision?.primary_trend === 'BEARISH' ? 'text-rose-400' : 'text-slate-300'}`}>
+                    {vision?.primary_trend ?? '--'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center bg-slate-900/40 px-3 py-1.5 rounded-lg">
+                  <span className="text-slate-400">Chart Pattern:</span>
+                  <span className="font-medium text-slate-200">{vision?.chart_pattern ?? '--'}</span>
+                </div>
+                <div className="flex justify-between items-center bg-slate-900/40 px-3 py-1.5 rounded-lg">
+                  <span className="text-slate-400">Support / Resistance:</span>
+                  <span className="font-mono text-slate-300 text-[11px]">
+                    ${vision?.key_support ? Number(vision.key_support).toFixed(0) : '--'} / ${vision?.key_resistance ? Number(vision.key_resistance).toFixed(0) : '--'}
+                  </span>
+                </div>
               </div>
-              <div className="flex justify-between items-center bg-slate-900/40 px-3 py-1.5 rounded-lg">
-                <span className="text-slate-400">Support / Resistance:</span>
-                <span className="font-mono text-slate-300 text-[11px]">
-                  ${vision?.key_support ? Number(vision.key_support).toFixed(0) : '--'} / ${vision?.key_resistance ? Number(vision.key_resistance).toFixed(0) : '--'}
-                </span>
-              </div>
-            </div>
+            )}
           </div>
 
         </div>

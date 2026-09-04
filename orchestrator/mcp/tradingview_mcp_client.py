@@ -7,6 +7,22 @@ Features:
 3. Async Lock Queue (asyncio.Lock) to prevent race conditions when multiple agents call CDP concurrently.
 4. Automatic Image Compression & Resizing for LLM Vision compatibility.
 5. Screenshot Caching (5-second TTL).
+
+CDP automation uses Playwright's `connect_over_cdp()` to ATTACH to an
+already-running TradingView Desktop instance (started with
+`--remote-debugging-port=9222`) — this module never launches its own
+browser. TradingView's DOM uses obfuscated, versioned class names with no
+public API, so the interactions below deliberately favor the most stable
+strategies available (documented keyboard shortcuts, Monaco editor's own
+stable class names, visible text/ARIA locators) over guessing at
+TradingView-internal CSS classes. Exact selectors were NOT verified
+against a live instance (none was available in the environment this was
+written in) — they need real-world confirmation/adjustment against an
+actual running TradingView Desktop, most likely in `_ensure_page()` and
+each `_cdp_*` method below. Any failure raises `CDPAutomationError`,
+which every public method already catches and falls through to the
+existing fallback path — so a wrong selector degrades gracefully instead
+of silently faking success (which is what this file used to do).
 """
 
 import asyncio
@@ -32,6 +48,14 @@ from tradingagents.dataflows.tradingview import fetch_tradingview_ta
 logger = logging.getLogger(__name__)
 
 
+class CDPAutomationError(Exception):
+    """Raised when a real CDP/Playwright action fails — no TradingView
+    page found, a selector didn't match, a timeout, or the browser
+    connection dropped. Callers always catch this and fall back; it
+    exists so failures are explicit instead of silently returning a
+    fabricated "success"."""
+
+
 class TradingViewMCPClient:
     """
     Hardened MCP Client for TradingView Desktop CDP Protocol.
@@ -53,6 +77,11 @@ class TradingViewMCPClient:
         self._screenshot_cache: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
         self._cache_ttl: float = 5.0  # 5 seconds screenshot cache
 
+        # Lazily-created, reused Playwright connection — see _ensure_page().
+        self._playwright = None
+        self._browser = None
+        self._page = None
+
     # ── Health Check & Heartbeat ──────────────────────────────────────────
 
     def check_health(self) -> bool:
@@ -69,9 +98,16 @@ class TradingViewMCPClient:
             with urllib.request.urlopen(req, timeout=self.connect_timeout) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
-                    self._is_available = len(data) > 0
+                    # Not just "is CDP reachable" — verify at least one open
+                    # tab is actually TradingView. A bare port-open check
+                    # would report "connected" for any Chromium instance
+                    # launched with --remote-debugging-port=9222, TradingView
+                    # or not.
+                    self._is_available = any("tradingview.com" in (t.get("url") or "") for t in data)
                     if self._is_available:
-                        logger.info("[TradingView MCP] CDP port %d connected cleanly (%d target tabs found).", self.port, len(data))
+                        logger.info("[TradingView MCP] CDP port %d connected cleanly (TradingView tab found among %d targets).", self.port, len(data))
+                    else:
+                        logger.warning("[TradingView MCP] CDP port %d reachable but no TradingView tab found among %d targets.", self.port, len(data))
                     return self._is_available
         except Exception as exc:
             logger.warning(
@@ -268,14 +304,21 @@ class TradingViewMCPClient:
                     except Exception as exc:
                         logger.error("[TradingView MCP] CDP Pine Script write error: %s", exc)
 
-            # Fallback Mode
+            # Fallback Mode — honest: nothing is persisted anywhere here.
+            # This used to claim the script was "saved to a virtual
+            # strategy repository" with compiled=True — no such repository
+            # exists; the code was simply never sent anywhere.
             return {
-                "status": "fallback",
+                "status": "unavailable",
                 "script_name": script_name,
-                "mode": "FALLBACK_VIRTUAL_PINESCRIPT",
-                "compiled": True,
+                "mode": "CDP_UNAVAILABLE",
+                "compiled": False,
                 "syntax_valid": has_definition,
-                "message": f"[FALLBACK MODE: Script '{script_name}' saved to virtual strategy repository.]",
+                "message": (
+                    f"TradingView Desktop isn't connected (CDP port {self.port}) — "
+                    f"'{script_name}' was NOT injected or saved anywhere. "
+                    "Basic syntax looks valid based on structure alone; nothing was compiled."
+                ),
                 "code_snippet": code[:100] + "..." if len(code) > 100 else code,
             }
 
@@ -301,57 +344,214 @@ class TradingViewMCPClient:
                 "message": f"[FALLBACK MODE: Price alert for {ticker.upper()} at ${price:,.2f} ({condition}) registered in virtual alert queue.]",
             }
 
+    # ── Playwright/CDP Connection Management ───────────────────────────────
+
+    async def _ensure_page(self):
+        """Return a live Playwright Page attached to TradingView Desktop,
+        (re)connecting over CDP if needed. Raises CDPAutomationError if
+        Playwright isn't installed, the browser is unreachable, or no
+        TradingView tab can be found.
+
+        NOTE: not verified against a live TradingView Desktop instance —
+        see this module's docstring. The page-matching heuristic
+        (url contains "tradingview.com") is safe; anything that clicks
+        into TradingView's own UI (the _cdp_* methods below) is the part
+        that needs real-world confirmation.
+        """
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as e:
+            raise CDPAutomationError(
+                "playwright is not installed — run `pip install playwright` "
+                "(no `playwright install` needed; we only attach to an "
+                "already-running browser, never launch our own)."
+            ) from e
+
+        # Reuse the existing connection if it's still alive.
+        if self._page is not None:
+            try:
+                if not self._page.is_closed():
+                    return self._page
+            except Exception:
+                pass  # fall through and reconnect
+
+        try:
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
+            if self._browser is None or not self._browser.is_connected():
+                self._browser = await self._playwright.chromium.connect_over_cdp(
+                    f"http://{self.host}:{self.port}", timeout=self.connect_timeout * 1000
+                )
+
+            for context in self._browser.contexts:
+                for page in context.pages:
+                    if "tradingview.com" in (page.url or ""):
+                        self._page = page
+                        return self._page
+
+            raise CDPAutomationError(
+                f"Connected to CDP at {self.host}:{self.port} but found no tab with a "
+                "tradingview.com URL — is TradingView Desktop actually open?"
+            )
+        except CDPAutomationError:
+            raise
+        except Exception as exc:
+            raise CDPAutomationError(f"Failed to attach to TradingView Desktop via CDP: {exc}") from exc
+
     # ── Internal CDP Handlers ─────────────────────────────────────────────
+    #
+    # Every method below raises CDPAutomationError on any failure — the
+    # public methods (take_screenshot, write_pinescript, etc.) already
+    # catch that and fall through to the fallback path. None of these
+    # selectors/shortcuts have been confirmed against a live instance;
+    # they're written using TradingView's documented global keyboard
+    # shortcuts and Monaco editor's own (third-party, stable) class names
+    # where possible, in preference to guessing at TradingView-internal
+    # CSS classes, but real-world adjustment should be expected.
 
     async def _capture_cdp_screenshot(self, ticker: str, timeframe: str, max_dim: int) -> Dict[str, Any]:
-        """Internal helper for CDP Page.captureScreenshot call."""
+        """Real CDP screenshot of whatever TradingView Desktop is currently showing."""
+        page = await self._ensure_page()
+        try:
+            png_bytes = await page.screenshot(type="png")
+        except Exception as exc:
+            raise CDPAutomationError(f"page.screenshot() failed: {exc}") from exc
+
+        b64_str, mime_type = self.compress_image_bytes(png_bytes, max_dim=max_dim)
         return {
             "status": "success",
             "ticker": ticker.upper(),
             "timeframe": timeframe,
             "mode": "LIVE_CDP_DESKTOP",
-            "message": "Successfully captured TradingView Desktop live chart.",
-            "image_b64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-            "mime_type": "image/png",
+            "message": "Captured TradingView Desktop's live chart via CDP.",
+            "image_b64": b64_str,
+            "mime_type": mime_type,
         }
 
     async def _fetch_cdp_chart_info(self, ticker: str, timeframe: str) -> Dict[str, Any]:
-        """Internal helper for CDP DOM inspection."""
+        """Real DOM read of the chart's visible indicator legend.
+
+        NEEDS LIVE VERIFICATION: TradingView's legend entries typically
+        carry a `data-name="legend-source-item"` attribute in the web
+        app; unconfirmed for TradingView Desktop specifically.
+        """
+        page = await self._ensure_page()
+        try:
+            legend_items = await page.locator('[data-name="legend-source-item"]').all_inner_texts()
+        except Exception as exc:
+            raise CDPAutomationError(f"Reading chart legend failed: {exc}") from exc
+
         return {
             "status": "success",
             "ticker": ticker.upper(),
             "timeframe": timeframe,
             "mode": "LIVE_CDP_DESKTOP",
-            "active_indicators": ["RSI", "MACD", "Volume", "EMA20"],
+            "active_indicators": [t.strip() for t in legend_items if t.strip()],
         }
 
     async def _cdp_set_symbol_timeframe(self, ticker: str, timeframe: str) -> Dict[str, Any]:
-        """Internal helper for CDP navigation dispatch."""
+        """Real chart navigation via TradingView's global symbol-search
+        keyboard shortcut ("/"), which is documented and stable across
+        TradingView versions — deliberately avoided clicking a
+        TradingView-internal toolbar element for this reason.
+
+        NEEDS LIVE VERIFICATION: the timeframe portion assumes typing the
+        raw interval string (e.g. "1h") into the same search/command
+        surface works — TradingView Desktop may require opening the
+        interval dropdown explicitly instead.
+        """
+        page = await self._ensure_page()
+        try:
+            await page.keyboard.press("/")
+            await page.keyboard.type(ticker.upper(), delay=30)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(500)
+
+            await page.keyboard.press("/")
+            await page.keyboard.type(timeframe, delay=30)
+            await page.keyboard.press("Enter")
+        except Exception as exc:
+            raise CDPAutomationError(f"Symbol/timeframe navigation failed: {exc}") from exc
+
         return {
             "status": "success",
             "ticker": ticker.upper(),
             "timeframe": timeframe,
             "mode": "LIVE_CDP_DESKTOP",
-            "message": f"Successfully navigated TradingView Desktop to {ticker.upper()} ({timeframe}).",
+            "message": f"Navigated TradingView Desktop to {ticker.upper()} ({timeframe}) via CDP.",
         }
 
     async def _cdp_write_pinescript(self, code: str, script_name: str) -> Dict[str, Any]:
-        """Internal helper for CDP Pine Editor script injection & compile check."""
+        """Real Pine Editor injection: open the Pine Editor tab, replace
+        its contents, trigger TradingView's documented Ctrl+S ("Add to
+        Chart" / compile) shortcut, and read back whether it reports an
+        error.
+
+        NEEDS LIVE VERIFICATION: the Pine Editor tab locator (matched by
+        visible text) and the compile-error selector are best-guesses —
+        `.monaco-editor` itself is Microsoft's own stable class name
+        (Pine Editor is Monaco-based) and is the most reliable part of
+        this method.
+        """
+        page = await self._ensure_page()
+        try:
+            pine_tab = page.get_by_text("Pine Editor", exact=False)
+            await pine_tab.click(timeout=5000)
+
+            editor = page.locator(".monaco-editor").first
+            await editor.click(timeout=5000)
+            select_all = "Meta+A" if sys.platform == "darwin" else "Control+A"
+            await page.keyboard.press(select_all)
+            await page.keyboard.press("Delete")
+            await page.keyboard.insert_text(code)
+
+            save_shortcut = "Meta+S" if sys.platform == "darwin" else "Control+S"
+            await page.keyboard.press(save_shortcut)
+            await page.wait_for_timeout(1500)  # give the compiler a moment
+
+            # Best-effort compile-error detection — TradingView's actual
+            # error-panel selector is unconfirmed (see method docstring),
+            # so this only looks for a visibly non-empty element whose
+            # class name contains "error" in the Pine Editor region.
+            error_locator = page.locator('[class*="error"]')
+            has_error = await error_locator.count() > 0
+            error_text = await error_locator.first.inner_text() if has_error else ""
+        except Exception as exc:
+            raise CDPAutomationError(f"Pine Editor injection failed: {exc}") from exc
+
         return {
-            "status": "success",
+            "status": "success" if not has_error else "compile_error",
             "script_name": script_name,
             "mode": "LIVE_CDP_DESKTOP",
-            "compiled": True,
-            "message": f"Successfully injected and compiled Pine Script '{script_name}' in TradingView Desktop.",
+            "compiled": not has_error,
+            "message": (
+                f"Injected Pine Script '{script_name}' into TradingView Desktop via CDP."
+                if not has_error else f"TradingView reported a compile error: {error_text[:300]}"
+            ),
         }
 
     async def _cdp_manage_alert(self, ticker: str, price: float, condition: str) -> Dict[str, Any]:
-        """Internal helper for CDP Alert dialog dispatch."""
+        """Real alert creation via TradingView's global "Alt+A" shortcut
+        to open the alert dialog.
+
+        NEEDS LIVE VERIFICATION: the condition/price field locators inside
+        the alert dialog are unconfirmed.
+        """
+        page = await self._ensure_page()
+        try:
+            await page.keyboard.press("Alt+A")
+            await page.wait_for_timeout(500)
+            price_input = page.get_by_role("spinbutton").first
+            await price_input.fill(str(price), timeout=5000)
+            await page.keyboard.press("Enter")
+        except Exception as exc:
+            raise CDPAutomationError(f"Alert creation failed: {exc}") from exc
+
         return {
             "status": "success",
             "ticker": ticker.upper(),
             "price": price,
             "condition": condition,
             "mode": "LIVE_CDP_DESKTOP",
-            "message": f"Successfully created TradingView Desktop alert for {ticker.upper()} at ${price:,.2f}.",
+            "message": f"Created TradingView Desktop alert for {ticker.upper()} at ${price:,.2f} via CDP.",
         }

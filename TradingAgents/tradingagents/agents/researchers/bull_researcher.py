@@ -2,7 +2,7 @@ from langchain_core.messages import AIMessage
 import time
 import json
 from tradingagents.agents.utils.prompt_blocks import (
-    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, STRICT_SYSTEM_PREAMBLE_NO_TOOLS,
+    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, get_strict_system_preamble_no_tools,
 )
 
 
@@ -27,7 +27,7 @@ def create_bull_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""{STRICT_SYSTEM_PREAMBLE_NO_TOOLS}
+        prompt = f"""{get_strict_system_preamble_no_tools()}
 
 You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
 

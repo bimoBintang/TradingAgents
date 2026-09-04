@@ -5,12 +5,13 @@ before submitting any order to a broker. All checks are blocking
 and deterministic — no async monitoring (that comes in Phase 6).
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, date
 from collections import defaultdict
 from enum import Enum
-from typing import Optional, Dict, List, Set
+from typing import Any, Optional, Dict, List, Set
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,8 @@ class RiskController:
         consecutive_loss_limit: int = 3,
         consecutive_loss_cooldown_seconds: int = 3600,
         max_leverage: int = 10,
+        db: Optional[Any] = None,
+        account_id: str = "default",
     ):
         """Initialize risk controller.
 
@@ -168,6 +171,15 @@ class RiskController:
             risk_per_trade_pct: Risk budget per trade for ATR sizing (default 2%)
             consecutive_loss_limit: N consecutive losses triggers cooldown
             max_leverage: Hard cap on leverage multiplier (default 10)
+            db: tradingagents.storage.database.Database for durable risk
+                state. Without it this controller is memory-only, which is
+                UNSAFE in any deployment that constructs a new controller
+                per analysis (the SaaS API does exactly that): the kill
+                switch and the loss history it depends on would reset
+                before every decision.
+            account_id: Scopes the persisted state. The database file is
+                shared across users, so this must be unique per trading
+                account or one user's halt state would leak into another's.
         """
         self.max_drawdown_pct = max_drawdown_pct or {
             "daily": 0.05,
@@ -183,6 +195,10 @@ class RiskController:
         self.consecutive_loss_cooldown_seconds = consecutive_loss_cooldown_seconds
         self.max_leverage = max_leverage
 
+        # Persistence
+        self._db = db
+        self._account_id = account_id
+
         # State
         self._kill_switch = False
         self._kill_switch_reason = ""
@@ -191,6 +207,8 @@ class RiskController:
         self._last_loss_time: Optional[datetime] = None
         self._trade_results: List[Dict] = []  # {pnl, ticker, timestamp}
         self._pnl_tracker = _PnLTracker()  # Per-period drawdown tracking
+
+        self._load_persisted_state()
 
     # ── Main evaluate() ───────────────────────────────────────────────
 
@@ -499,6 +517,92 @@ class RiskController:
 
         return None
 
+    # ── Durable State ─────────────────────────────────────────────────
+
+    def _load_persisted_state(self) -> None:
+        """Restore kill switch, loss streak and PnL window from the database.
+
+        A failure here must NOT be silent and must NOT be treated as "no
+        halt in effect": if we cannot read the risk state, we cannot know
+        whether trading was halted, and the safe assumption is that it was.
+        """
+        if self._db is None:
+            return
+        try:
+            row = self._db.load_risk_state(self._account_id)
+        except Exception as e:
+            logger.error(
+                "Could not read risk state for %s (%s) — engaging kill switch. "
+                "Trading stays halted until the state store is readable.",
+                self._account_id, e,
+            )
+            self._kill_switch = True
+            self._kill_switch_reason = "Risk state unreadable (fail-closed)"
+            self._kill_switch_activated_date = datetime.utcnow().date()
+            return
+
+        if not row:
+            return
+
+        self._kill_switch = bool(row.get("kill_switch"))
+        self._kill_switch_reason = row.get("kill_switch_reason") or ""
+
+        raw_date = row.get("kill_switch_activated_date")
+        if raw_date:
+            try:
+                self._kill_switch_activated_date = date.fromisoformat(raw_date)
+            except (TypeError, ValueError):
+                # Unparseable date would disable auto-recovery forever;
+                # treat the halt as starting today instead of dropping it.
+                self._kill_switch_activated_date = datetime.utcnow().date()
+
+        self._consecutive_losses = int(row.get("consecutive_losses") or 0)
+
+        raw_loss_time = row.get("last_loss_time")
+        if raw_loss_time:
+            try:
+                self._last_loss_time = datetime.fromisoformat(raw_loss_time)
+            except (TypeError, ValueError):
+                self._last_loss_time = None
+
+        try:
+            self._pnl_tracker.load_state(json.loads(row.get("pnl_window_json") or "[]"))
+        except (TypeError, ValueError) as e:
+            logger.warning("Could not restore PnL window for %s: %s", self._account_id, e)
+
+        if self._kill_switch:
+            logger.critical(
+                "Restored ACTIVE kill switch for %s: %s",
+                self._account_id, self._kill_switch_reason,
+            )
+
+    def _persist_state(self) -> None:
+        """Write current risk state. Never raises — a persistence failure
+        must not abort an in-flight risk decision, but it is logged loudly
+        because the next process start would silently lose the halt."""
+        if self._db is None:
+            return
+        try:
+            self._db.save_risk_state(
+                account_id=self._account_id,
+                kill_switch=self._kill_switch,
+                kill_switch_reason=self._kill_switch_reason,
+                kill_switch_activated_date=(
+                    self._kill_switch_activated_date.isoformat()
+                    if self._kill_switch_activated_date else None
+                ),
+                consecutive_losses=self._consecutive_losses,
+                last_loss_time=(
+                    self._last_loss_time.isoformat() if self._last_loss_time else None
+                ),
+                pnl_window_json=json.dumps(self._pnl_tracker.to_state()),
+            )
+        except Exception as e:
+            logger.error(
+                "FAILED to persist risk state for %s: %s — a restart would lose "
+                "the current halt/loss-streak state.", self._account_id, e,
+            )
+
     # ── Kill Switch ───────────────────────────────────────────────────
 
     def activate_kill_switch(self, reason: str = "Manual"):
@@ -507,6 +611,7 @@ class RiskController:
         self._kill_switch_reason = reason
         self._kill_switch_activated_date = datetime.utcnow().date()
         logger.critical("KILL SWITCH: %s", reason)
+        self._persist_state()
 
     def deactivate_kill_switch(self):
         """Resume trading."""
@@ -514,6 +619,7 @@ class RiskController:
         self._kill_switch_reason = ""
         self._kill_switch_activated_date = None
         logger.info("Kill switch deactivated")
+        self._persist_state()
 
     def _check_kill_switch_auto_recovery(self):
         """Auto-deactivate kill switch on new trading day.
@@ -538,6 +644,9 @@ class RiskController:
             logger.info(
                 "Kill switch auto-recovered (was: %s)", old_reason
             )
+            # Auto-recovery mutates the halt state, so it must be written
+            # too — otherwise the next process would restore the stale halt.
+            self._persist_state()
 
     @property
     def is_kill_switch_active(self) -> bool:
@@ -566,6 +675,11 @@ class RiskController:
             self._last_loss_time = datetime.utcnow()
         else:
             self._consecutive_losses = 0
+
+        # Persist immediately: this is the record that decides whether the
+        # NEXT decision (in a different process, or a different graph
+        # instance) sees the loss streak and the drawdown at all.
+        self._persist_state()
 
     # ── Status ────────────────────────────────────────────────────────
 
@@ -673,6 +787,38 @@ class _PnLTracker:
     def reset_daily(self):
         """Reset daily PnL counter (called on new trading day)."""
         self._daily_pnl = 0.0
+
+    # ── Persistence ───────────────────────────────────────────────────
+    # The rolling window IS the drawdown trigger: without it, every new
+    # RiskController starts from zero realized PnL and the daily/weekly
+    # loss limits can never be reached, no matter how much was actually
+    # lost. Persisting the kill-switch flag alone would therefore fix the
+    # symptom while leaving the trigger permanently disarmed.
+
+    def to_state(self) -> List[Dict[str, Any]]:
+        """Serialize the rolling trade window (JSON-safe)."""
+        self._cleanup_old_trades()
+        return [
+            {"pnl": t["pnl"], "timestamp": t["timestamp"].isoformat()}
+            for t in self._trades
+        ]
+
+    def load_state(self, rows: List[Dict[str, Any]]) -> None:
+        """Restore a previously serialized window and recompute totals."""
+        restored = []
+        for r in rows or []:
+            try:
+                ts = r["timestamp"]
+                restored.append({
+                    "pnl": float(r["pnl"]),
+                    "timestamp": datetime.fromisoformat(ts) if isinstance(ts, str) else ts,
+                })
+            except (KeyError, TypeError, ValueError):
+                continue  # skip malformed rows rather than losing the whole window
+        self._trades = restored
+        # Force a recompute of the period totals from the restored rows.
+        self._last_cleanup = None
+        self._cleanup_old_trades()
 
     @property
     def daily_pnl(self) -> float:

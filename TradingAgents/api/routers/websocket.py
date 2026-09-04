@@ -2,6 +2,8 @@
 
 Endpoints:
     ws /ws/portfolio      — streams portfolio state every 5 seconds
+    ws /ws/ohlcv/{ticker} — streams live candles from the user's connected
+                            exchange every few seconds (live ccxt only)
     ws /ws/analysis/{id}  — streams task progress until completed/failed
     ws /ws/chart-control  — bidirectional: dashboard reports chart state,
                             MCP-driven commands (api/chart_control.py) pushed in
@@ -14,18 +16,21 @@ import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from fastapi.concurrency import run_in_threadpool
 
 from api import chart_control
 from api.auth import ClerkTokenInvalid, verify_clerk_jwt
 from api.ws_manager import manager
 from api.database import SessionLocal
 from api.models import User, PortfolioState, Position, TaskResult
+from api.services.pnl import compute_daily_pnl
 
 logger = logging.getLogger("api.ws")
 
 router = APIRouter(tags=["WebSocket"])
 
 PORTFOLIO_PUSH_INTERVAL = 5  # seconds
+OHLCV_PUSH_INTERVAL = 8      # seconds — real-time-feeling, gentle on exchange rate limits
 
 
 # ── Auth helper ───────────────────────────────────────────────────────
@@ -69,6 +74,7 @@ async def ws_portfolio(websocket: WebSocket, token: str = Query("")):
             with SessionLocal() as db:
                 ps = db.query(PortfolioState).filter(PortfolioState.user_id == user_id).first()
                 positions = []
+                pos_rows = []
                 if ps:
                     pos_rows = db.query(Position).filter(Position.portfolio_id == ps.id).all()
                     positions = [
@@ -82,6 +88,10 @@ async def ws_portfolio(websocket: WebSocket, token: str = Query("")):
                         }
                         for p in pos_rows
                     ]
+                # Computed fresh each tick from real trade timestamps —
+                # see api/services/pnl.py for why ps.daily_pnl itself
+                # isn't used (it drifts into "since last restart").
+                daily_pnl = compute_daily_pnl(db, ps.id, pos_rows) if ps else None
 
             payload = {
                 "type": "portfolio_update",
@@ -89,8 +99,9 @@ async def ws_portfolio(websocket: WebSocket, token: str = Query("")):
                     "cash_balance": ps.cash_balance if ps else 0.0,
                     "total_equity": ps.total_equity if ps else 0.0,
                     "total_pnl": ps.total_pnl if ps else 0.0,
-                    "daily_pnl": ps.daily_pnl if ps else None,
+                    "daily_pnl": daily_pnl,
                     "win_rate": ps.win_rate if ps else 0.0,
+                    "max_drawdown_pct": ps.max_drawdown_pct if ps else 0.0,
                     "total_trades": ps.total_trades if ps else 0,
                     "positions": positions,
                 },
@@ -103,6 +114,69 @@ async def ws_portfolio(websocket: WebSocket, token: str = Query("")):
         pass
     except Exception as e:
         logger.error("WS portfolio error (user=%d): %s", user_id, e)
+    finally:
+        await manager.disconnect(websocket, user_id)
+
+
+# ── Live OHLCV Feed ───────────────────────────────────────────────────
+#
+# Only active when the user has a live ccxt broker with a real exchange
+# selected — closes immediately otherwise so ChartPanel.tsx falls back to
+# its existing yfinance-backed REST polling (useOHLCV) unchanged. This is
+# additive: it never replaces that path, only supersedes it when it's the
+# more accurate source (the exchange the bot actually trades on).
+
+@router.websocket("/ws/ohlcv/{ticker}")
+async def ws_ohlcv(websocket: WebSocket, ticker: str, timeframe: str = Query("1h"), token: str = Query("")):
+    """Stream live candles for `ticker` from the user's connected exchange."""
+    user_id = await _authenticate_ws(token)
+    if user_id is None:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
+    from api.user_context import get_user_config
+    with SessionLocal() as db:
+        exec_cfg = get_user_config(db, user_id).get("execution", {})
+
+    exchange_id = exec_cfg.get("exchange") if exec_cfg.get("broker") == "ccxt" else None
+    if not exchange_id:
+        # No live exchange configured — nothing for this feed to source
+        # from. Close with a distinct code so the frontend can tell "not
+        # applicable" apart from "server error" and stay silently on yfinance.
+        await websocket.close(code=4004, reason="No live exchange configured")
+        return
+
+    quote = exec_cfg.get("quote_currency", "USDT")
+
+    await manager.connect(websocket, user_id)
+    last_candle_time = None
+    try:
+        while True:
+            try:
+                from tradingagents.dataflows.ccxt_ohlcv import fetch_ohlcv
+                candles = await run_in_threadpool(fetch_ohlcv, exchange_id, ticker, timeframe, 200, quote)
+                if candles and candles[-1]["time"] != last_candle_time:
+                    last_candle_time = candles[-1]["time"]
+                    await manager.send_json(user_id, {
+                        "type": "ohlcv_update",
+                        "ticker": ticker.upper(),
+                        "exchange": exchange_id,
+                        "timeframe": timeframe,
+                        "candles": candles,
+                    })
+            except Exception as e:
+                # A single failed fetch (rate limit, transient network
+                # error, bad symbol) shouldn't kill the whole feed — log
+                # and retry on the next tick. useOHLCV's yfinance data
+                # keeps rendering underneath in the meantime.
+                logger.warning("WS ohlcv fetch failed for %s@%s: %s", ticker, exchange_id, e)
+
+            await asyncio.sleep(OHLCV_PUSH_INTERVAL)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error("WS ohlcv error (user=%d, ticker=%s): %s", user_id, ticker, e)
     finally:
         await manager.disconnect(websocket, user_id)
 
@@ -142,10 +216,25 @@ async def ws_analysis(websocket: WebSocket, task_id: str, token: str = Query("")
                 "ticker": task_row.ticker,
             }
 
-            # Include results if completed
+            # Include results if completed — flat shape (decision/
+            # order_result/reports at the top level), matching
+            # AnalysisResultResponse from GET /api/analyze/{task_id}
+            # exactly. This used to nest everything under payload["result"]
+            # instead, while the frontend (AnalysisPage.tsx) reads
+            # rawData?.decision directly — so whenever this WS was the
+            # active source (its "LIVE" badge on), the results section
+            # silently never rendered even though status correctly showed
+            # "completed". decision also goes through the same
+            # _parse_decision() normalization as the REST endpoint — see
+            # its docstring in api/routers/analysis.py for why that matters.
             if task_row.status == "completed" and task_row.result_json:
                 try:
-                    payload["result"] = json.loads(task_row.result_json)
+                    from api.routers.analysis import _parse_decision
+                    result = json.loads(task_row.result_json)
+                    decision = _parse_decision(result.get("decision"))
+                    payload["decision"] = decision.model_dump() if decision else None
+                    payload["order_result"] = result.get("order_result")
+                    payload["reports"] = result.get("reports")
                 except json.JSONDecodeError:
                     pass
             elif task_row.status == "failed":

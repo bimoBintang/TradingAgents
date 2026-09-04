@@ -98,6 +98,24 @@ export interface Performance {
   worst_trade: number;
 }
 
+export interface BrokerTestRequest {
+  broker: string;
+  exchange?: string | null;
+  api_key: string;
+  api_secret: string;
+  password?: string;
+  sandbox: boolean;
+  market_type?: string;
+  quote_currency?: string;
+}
+
+export interface BrokerTestResponse {
+  success: boolean;
+  broker_name: string;
+  message: string;
+  balance?: Record<string, number> | null;
+}
+
 export interface EquityPoint {
   timestamp: string;
   total_equity: number;
@@ -112,10 +130,39 @@ export interface SystemStatus {
   uptime_seconds: number;
 }
 
+/**
+ * Normalized Trader decision — see api/schemas.py::DecisionSummary and
+ * api/routers/analysis.py::_parse_decision() for why this is the ONE
+ * shape every consumer gets, regardless of whether the backend's
+ * structured extraction succeeded (is_structured: true, most fields
+ * populated) or fell back to a bare action word (is_structured: false,
+ * only action/raw_text present). Never guess at `decision`'s shape in a
+ * component — this interface IS the contract.
+ */
+export interface DecisionSummary {
+  action: string; // BUY | SELL | HOLD | STRONG_BUY | STRONG_SELL
+  is_structured: boolean;
+  raw_text: string;
+  ticker?: string | null;
+  confidence_score?: number | null;
+  quantity_pct?: number | null;
+  order_type?: string | null;
+  limit_price?: number | null;
+  stop_loss_pct?: number | null;
+  take_profit_pct?: number | null;
+  reasoning?: string | null;
+  key_factors?: string[] | null;
+  risk_reward_ratio?: number | null;
+  time_horizon?: string | null;
+  leverage?: number | null;
+  position_side?: string | null;
+  margin_type?: string | null;
+}
+
 export interface AnalyzeResult {
   task_id: string;
   status: string;
-  decision?: any;
+  decision?: DecisionSummary | null;
   order_result?: any;
   reports?: Record<string, string | null>;
   error?: string;
@@ -156,6 +203,11 @@ export const api = {
 
   // Config
   config: () => request<{ config: Record<string, unknown> }>('/api/config'),
+  testBrokerConnection: (body: BrokerTestRequest) =>
+    request<BrokerTestResponse>('/api/config/test-broker', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   updateConfig: (updates: Record<string, unknown>) =>
     request<{ config: Record<string, unknown> }>('/api/config', {
       method: 'PUT',

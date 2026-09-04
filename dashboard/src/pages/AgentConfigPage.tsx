@@ -1,9 +1,10 @@
 import React, { useCallback, useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { cx } from '../utils/cx';
-import { Bot, Zap, ShieldAlert, Cpu, Activity, Save, Loader2, CheckCircle2 } from 'lucide-react';
+import { Bot, Zap, Cpu, Activity, Save, Loader2, CheckCircle2 } from 'lucide-react';
 import { useConfig } from '../hooks/useApi';
 import { api } from '../services/api';
+import { diffConfig } from '../utils/configDiff';
 
 const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void }> = ({ enabled, onChange }) => (
   <button 
@@ -26,11 +27,17 @@ const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void }> = (
   </button>
 );
 
-// Agent strategies derived from config flags
+// Agent strategies derived from config flags.
+// Kill Switch used to be listed here too (risk_controls.kill_switch_enabled)
+// — removed as a duplicate editor of Settings > Risk Controls > Automated
+// Kill Switch, which is the more complete version (also sets the
+// consecutive-loss cooldown). Editing the SAME field from two independent
+// pages was exactly the kind of redundancy diffConfig's cross-page fix
+// exists to survive, but survivable isn't the same as needed — one editor
+// per field is simpler and removes any doubt about which page is "current".
 const STRATEGIES = [
   { id: 'enable_execution_optimizer', name: 'Execution Optimizer', desc: 'AI-powered VWAP timing, DCA, and ATR-based stop placement.', icon: Zap, color: 'text-amber-500', bg: 'bg-amber-500/10' },
   { id: 'scheduler.auto_execute', name: 'Auto-Execute Decisions', desc: 'Automatically execute approved trade decisions without manual confirmation.', icon: Activity, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-  { id: 'risk_controls.kill_switch_enabled', name: 'Kill Switch (Risk Guard)', desc: 'Automatically halt trading when drawdown exceeds configured limits.', icon: ShieldAlert, color: 'text-rose-500', bg: 'bg-rose-500/10' },
   { id: 'realtime.enabled', name: 'Realtime Price Monitor', desc: 'Continuous price polling for auto stop-loss exits.', icon: Cpu, color: 'text-purple-500', bg: 'bg-purple-500/10' },
 ];
 
@@ -40,16 +47,27 @@ export const AgentConfigPage: React.FC = () => {
 
   // Local state mirrors the config for optimistic UI
   const [localConfig, setLocalConfig] = useState<Record<string, any>>({});
+  // The last-synced server snapshot — diffed against localConfig at save
+  // time so only fields actually touched on THIS page get sent (see
+  // src/utils/configDiff.ts). Always updated in lockstep with
+  // localConfig below, never independently.
+  const [baselineConfig, setBaselineConfig] = useState<Record<string, any>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
-  // Sync local state when config loads
+  // Sync local state when config loads — but NEVER while the user has
+  // unsaved edits (hasChanges). useConfig() polls every 60s; without this
+  // guard, a background refresh (someone else's save, the balance-sync
+  // job, another browser tab) would silently blow away whatever the user
+  // was mid-way through editing here.
   useEffect(() => {
+    if (hasChanges) return;
     if (config && Object.keys(config).length > 0) {
       setLocalConfig(config);
+      setBaselineConfig(config);
     }
-  }, [JSON.stringify(config)]);
+  }, [JSON.stringify(config), hasChanges]);
 
   const getNestedValue = (obj: Record<string, any>, path: string): any => {
     const parts = path.split('.');
@@ -78,7 +96,12 @@ export const AgentConfigPage: React.FC = () => {
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      await api.updateConfig(localConfig);
+      // Send only what actually changed on this page — not the whole
+      // snapshot (see diffConfig's doc comment for why that matters).
+      const updates = diffConfig(baselineConfig, localConfig);
+      if (Object.keys(updates).length > 0) {
+        await api.updateConfig(updates);
+      }
       await refetch();
       setSaved(true);
       setHasChanges(false);
@@ -88,7 +111,7 @@ export const AgentConfigPage: React.FC = () => {
     } finally {
       setSaving(false);
     }
-  }, [localConfig, refetch]);
+  }, [localConfig, baselineConfig, refetch]);
 
   if (loading && Object.keys(localConfig).length === 0) {
     return (
@@ -99,7 +122,6 @@ export const AgentConfigPage: React.FC = () => {
   }
 
   const execution = localConfig.execution ?? {};
-  const riskControls = localConfig.risk_controls ?? {};
   const portfolio = localConfig.portfolio ?? {};
   const scheduler = localConfig.scheduler ?? {};
 
@@ -174,79 +196,28 @@ export const AgentConfigPage: React.FC = () => {
                       </div>
                     </div>
                   </CardContent>
+                  {/* Auto-Execute has ZERO effect while Require Trade
+                      Confirmation is on — execution_engine.py checks
+                      require_confirmation FIRST and blocks execution
+                      before auto_execute is ever consulted. Surface that
+                      dependency here instead of letting the toggle look
+                      like it's working when it silently isn't. */}
+                  {strat.id === 'scheduler.auto_execute' && isActive && !!execution.require_confirmation && (
+                    <div className="px-5 pb-4 -mt-1">
+                      <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-400">
+                        <span className="font-bold shrink-0">⚠️ No effect yet:</span>
+                        <span>
+                          "Require Manual Confirmation" (Settings → Execution & Order Flow) is ON and blocks every
+                          execution before Auto-Execute is ever checked. Turn that off too if you want trades to
+                          execute automatically.
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </Card>
               )
             })}
           </div>
-
-          {/* Execution Config */}
-          <Card className="bg-slate-900/50 border-slate-800">
-            <CardHeader className="py-4 border-b border-slate-800/50">
-              <CardTitle className="text-base">Execution Settings</CardTitle>
-            </CardHeader>
-            <CardContent className="p-6 flex flex-col gap-5">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-300 mb-2">Execution Mode</label>
-                  <select 
-                    value={execution.mode ?? 'disabled'}
-                    onChange={(e) => setNestedValue('execution.mode', e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 text-slate-200 text-sm rounded-md p-2.5 outline-none focus:border-blue-500"
-                  >
-                    <option value="disabled">Disabled</option>
-                    <option value="paper">Paper Trading</option>
-                    <option value="live">Live Trading</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-slate-300 mb-2">Broker</label>
-                  <select 
-                    value={execution.broker ?? 'paper'}
-                    onChange={(e) => setNestedValue('execution.broker', e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 text-slate-200 text-sm rounded-md p-2.5 outline-none focus:border-blue-500"
-                  >
-                    <option value="paper">Paper (Simulated)</option>
-                    <option value="ccxt">CCXT (Crypto Exchange)</option>
-                    <option value="alpaca">Alpaca (Stocks)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-300 mb-2">Exchange</label>
-                  <select 
-                    value={execution.exchange ?? 'binance'}
-                    onChange={(e) => setNestedValue('execution.exchange', e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 text-slate-200 text-sm rounded-md p-2.5 outline-none focus:border-blue-500"
-                  >
-                    <option value="binance">Binance</option>
-                    <option value="bybit">Bybit</option>
-                    <option value="okx">OKX</option>
-                    <option value="coinbase">Coinbase</option>
-                    <option value="kraken">Kraken</option>
-                    <option value="kucoin">KuCoin</option>
-                    <option value="gateio">Gate.io</option>
-                    <option value="alpaca">Alpaca (Stocks)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-slate-300 mb-2">Min Confidence</label>
-                  <div className="flex items-center gap-3">
-                    <input 
-                      type="range" min="0.1" max="1.0" step="0.05"
-                      value={execution.min_confidence ?? 0.5}
-                      onChange={(e) => setNestedValue('execution.min_confidence', Number(e.target.value))}
-                      className="flex-1 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                    />
-                    <span className="text-sm font-mono font-bold text-blue-400 w-12 text-right">
-                      {((execution.min_confidence ?? 0.5) * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
 
           {/* Scheduler */}
           <Card className="bg-slate-900/50 border-slate-800">
@@ -295,99 +266,24 @@ export const AgentConfigPage: React.FC = () => {
           </Card>
         </div>
 
-        {/* RIGHT COLUMN: Risk Parameters */}
+        {/* RIGHT COLUMN: Scheduler Behavior & Portfolio */}
         <div className="col-span-12 lg:col-span-5 flex flex-col gap-6">
+          {/* Max Daily Loss / Max Position / Max Concurrent Positions /
+              Trailing Stop, and the Sandbox + Require Trade Confirmation
+              toggles, used to be duplicated here — removed. They're fully
+              covered (and more completely: Settings' Risk tab also has
+              consecutive-loss cooldown and max weekly loss; Settings' API
+              tab pairs broker+exchange atomically and gates going live
+              with a confirmation dialog, neither of which this page ever
+              had) by Settings > Risk Controls and Settings > API
+              Management. One editor per field beats two that can silently
+              disagree. */}
           <Card className="bg-slate-900/50 border-slate-800">
             <CardHeader className="py-4 border-b border-slate-800/50">
-              <CardTitle className="text-base flex items-center gap-2">
-                <ShieldAlert size={18} className="text-rose-500" />
-                Global Risk Parameters
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-6 flex flex-col gap-6">
-               
-               {/* Max Daily Loss */}
-               <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="text-sm font-semibold text-slate-300">Max Daily Loss</label>
-                    <span className="text-sm font-mono font-bold text-rose-400">-{((riskControls.max_daily_loss_pct ?? 0.05) * 100).toFixed(0)}%</span>
-                  </div>
-                  <input 
-                    type="range" min="0.01" max="0.20" step="0.01" 
-                    value={riskControls.max_daily_loss_pct ?? 0.05} 
-                    onChange={(e) => setNestedValue('risk_controls.max_daily_loss_pct', Number(e.target.value))}
-                    className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500"
-                  />
-                  <div className="flex justify-between text-xs text-slate-500 mt-2 font-mono">
-                    <span>-1%</span><span>-10%</span><span>-20%</span>
-                  </div>
-               </div>
-
-               {/* Max Position */}
-               <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="text-sm font-semibold text-slate-300">Max Position Size</label>
-                    <span className="text-sm font-mono font-bold text-blue-400">{((riskControls.max_position_pct ?? 0.10) * 100).toFixed(0)}%</span>
-                  </div>
-                  <input 
-                    type="range" min="0.01" max="0.50" step="0.01" 
-                    value={riskControls.max_position_pct ?? 0.10} 
-                    onChange={(e) => setNestedValue('risk_controls.max_position_pct', Number(e.target.value))}
-                    className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                  />
-               </div>
-
-               {/* Max Concurrent Positions */}
-               <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="text-sm font-semibold text-slate-300">Max Concurrent Positions</label>
-                    <span className="text-sm font-mono font-bold text-slate-200">{riskControls.max_concurrent_positions ?? 5}</span>
-                  </div>
-                  <input 
-                    type="range" min="1" max="20" step="1" 
-                    value={riskControls.max_concurrent_positions ?? 5} 
-                    onChange={(e) => setNestedValue('risk_controls.max_concurrent_positions', Number(e.target.value))}
-                    className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                  />
-               </div>
-
-               {/* Trailing Stop */}
-               <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="text-sm font-semibold text-slate-300">Trailing Stop</label>
-                    <span className="text-sm font-mono font-bold text-amber-400">{((riskControls.trailing_stop_pct ?? 0.05) * 100).toFixed(0)}%</span>
-                  </div>
-                  <input 
-                    type="range" min="0" max="0.20" step="0.01" 
-                    value={riskControls.trailing_stop_pct ?? 0.05} 
-                    onChange={(e) => setNestedValue('risk_controls.trailing_stop_pct', Number(e.target.value))}
-                    className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                  />
-               </div>
-
-            </CardContent>
-          </Card>
-
-          <Card className="bg-slate-900/50 border-slate-800">
-            <CardHeader className="py-4 border-b border-slate-800/50">
-              <CardTitle className="text-base">Advanced Fine-Tuning</CardTitle>
+              <CardTitle className="text-base">Scheduler Behavior</CardTitle>
             </CardHeader>
             <CardContent className="p-6">
                <ul className="flex flex-col gap-5">
-                 <li className="flex items-center justify-between">
-                   <div>
-                     <p className="font-semibold text-slate-200 text-sm">Sandbox / Testnet Mode</p>
-                     <p className="text-xs text-slate-500 mt-0.5">Use exchange testnet for live broker.</p>
-                   </div>
-                   <Toggle enabled={!!execution.sandbox} onChange={(v) => setNestedValue('execution.sandbox', v)} />
-                 </li>
-                 <li className="flex items-center justify-between">
-                   <div>
-                     <p className="font-semibold text-slate-200 text-sm">Require Trade Confirmation</p>
-                     <p className="text-xs text-slate-500 mt-0.5">Manual confirm before executing live orders.</p>
-                   </div>
-                   <Toggle enabled={!!execution.require_confirmation} onChange={(v) => setNestedValue('execution.require_confirmation', v)} />
-                 </li>
                  <li className="flex items-center justify-between">
                    <div>
                      <p className="font-semibold text-slate-200 text-sm">Crypto 24/7 Trading</p>

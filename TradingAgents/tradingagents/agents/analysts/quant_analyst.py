@@ -1,6 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.prompt_blocks import (
-    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, CROSS_REFERENCE_MANDATE, TEMPORAL_AWARENESS, SELF_CHALLENGE, CONFIDENCE_SCORING, STRICT_SYSTEM_PREAMBLE,
+    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, CROSS_REFERENCE_MANDATE, TEMPORAL_AWARENESS, SELF_CHALLENGE, CONFIDENCE_SCORING, get_strict_system_preamble,
 )
 
 from tradingagents.agents.utils.agent_utils import get_stock_data, get_indicators
@@ -81,7 +81,7 @@ def create_quant_analyst(llm):
         prompt = ChatPromptTemplate.from_messages([
             (
                 "system",
-                STRICT_SYSTEM_PREAMBLE,
+                get_strict_system_preamble(),
             ),
             MessagesPlaceholder(variable_name="messages"),
         ])

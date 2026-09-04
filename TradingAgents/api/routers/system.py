@@ -28,9 +28,16 @@ async def readiness_check():
     Returns 200 if all dependencies are healthy, 503 otherwise.
     Used by Kubernetes/load balancer to determine if the pod can serve traffic.
     """
+    from api.crypto import IS_EPHEMERAL_KEY
+
     checks = {
         "database": False,
         "graph": False,
+        # Surfaced here so an operator can SEE the ephemeral-key condition
+        # instead of having to notice one startup log line. On an ephemeral
+        # key, stored exchange credentials do not survive a restart and
+        # live trading silently degrades to paper.
+        "persistent_credential_key": not IS_EPHEMERAL_KEY,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -46,8 +53,21 @@ async def readiness_check():
     graph = get_graph_optional()
     checks["graph"] = graph is not None
 
+    # Readiness deliberately does NOT gate on the credential key. In
+    # production the process refuses to start without FERNET_KEY (see
+    # api/crypto.py), so reaching this line there already proves the key is
+    # persistent. Failing readiness for it would only break local dev,
+    # where an ephemeral key is fine — so it is reported as a warning
+    # instead of pulling the instance out of rotation.
     all_healthy = all([checks["database"], checks["graph"]])
     checks["status"] = "ready" if all_healthy else "degraded"
+
+    if IS_EPHEMERAL_KEY:
+        checks["warnings"] = [
+            "FERNET_KEY is not set — stored exchange credentials will not survive a "
+            "restart and live trading will silently fall back to paper. Do not trade "
+            "real money in this state."
+        ]
 
     from fastapi.responses import JSONResponse
     status_code = 200 if all_healthy else 503

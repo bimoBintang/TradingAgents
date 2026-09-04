@@ -21,6 +21,7 @@ const ACCOUNT_OPTIONS = [
   { label: 'Paper Trading (Demo)', value: 'paper' },
   { label: 'Binance Live (API)', value: 'binance' },
   { label: 'Bybit Live (API)', value: 'bybit' },
+  { label: 'Bitget Live (API)', value: 'bitget' },
 ];
 
 function DashboardApp() {

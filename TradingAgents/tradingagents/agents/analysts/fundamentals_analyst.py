@@ -3,7 +3,7 @@ import time
 import json
 from tradingagents.agents.utils.agent_utils import get_fundamentals, get_balance_sheet, get_cashflow, get_income_statement, get_insider_transactions
 from tradingagents.agents.utils.prompt_blocks import (
-    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, CROSS_REFERENCE_MANDATE, TEMPORAL_AWARENESS, SELF_CHALLENGE, CONFIDENCE_SCORING, STRICT_SYSTEM_PREAMBLE,
+    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, CROSS_REFERENCE_MANDATE, TEMPORAL_AWARENESS, SELF_CHALLENGE, CONFIDENCE_SCORING, get_strict_system_preamble,
 )
 from tradingagents.dataflows.config import get_config
 
@@ -37,7 +37,7 @@ def create_fundamentals_analyst(llm):
             [
                 (
                     "system",
-                    STRICT_SYSTEM_PREAMBLE,
+                    get_strict_system_preamble(),
                 ),
                 MessagesPlaceholder(variable_name="messages"),
             ]

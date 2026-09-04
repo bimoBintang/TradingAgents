@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Portfolio } from '../services/api';
+import type { Portfolio, DecisionSummary } from '../services/api';
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -124,13 +124,108 @@ export function usePortfolioWS() {
   return { data, status };
 }
 
+// ── useOhlcvWS ───────────────────────────────────────────────────────
+//
+// Live candles from the user's own connected exchange (ws /ws/ohlcv/{ticker}
+// — see api/routers/websocket.py), sourced via ccxt so the chart matches
+// what the bot actually trades at instead of yfinance's composite/delayed
+// crypto price. Only meaningful when `enabled` (the caller — ChartPanel via
+// OverviewPage — passes this based on whether a live ccxt broker with a
+// real exchange is configured); the backend closes the socket immediately
+// with code 4004 otherwise, which this hook treats as a normal "not
+// applicable" state, not a failure to retry.
+
+export interface OhlcvCandle {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export function useOhlcvWS(ticker: string, timeframe: string, enabled: boolean) {
+  const [candles, setCandles] = useState<OhlcvCandle[] | null>(null);
+  const [status, setStatus] = useState<WsStatus>('disconnected');
+  const wsRef = useRef<WebSocket | null>(null);
+  const generationRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled || !ticker) {
+      setStatus('disconnected');
+      setCandles(null);
+      return;
+    }
+
+    const generation = ++generationRef.current;
+
+    const connect = async () => {
+      if (generationRef.current !== generation) return;
+      const token = await getToken();
+      if (!token || generationRef.current !== generation) return;
+
+      const url = `${getWsBase()}/ws/ohlcv/${encodeURIComponent(ticker)}?timeframe=${encodeURIComponent(timeframe)}&token=${token}`;
+      setStatus('connecting');
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (generationRef.current === generation) setStatus('connected');
+      };
+
+      ws.onmessage = (event) => {
+        if (generationRef.current !== generation) return;
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'ohlcv_update' && Array.isArray(msg.candles)) {
+            setCandles(msg.candles);
+          }
+        } catch {
+          // Ignore malformed messages
+        }
+      };
+
+      ws.onclose = (ev) => {
+        if (generationRef.current !== generation) return;
+        setStatus('disconnected');
+        // 4004 = "no live exchange configured" (paper trading / no
+        // broker) — an expected, stable state, not a transient failure.
+        // Reconnecting would just spam the same close every time.
+        if (ev.code === 4004) return;
+        setTimeout(connect, 5000);
+      };
+
+      ws.onerror = () => ws.close();
+    };
+
+    connect();
+
+    return () => {
+      generationRef.current += 1;
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  }, [ticker, timeframe, enabled]);
+
+  return { candles, status };
+}
+
 // ── useAnalysisWS ────────────────────────────────────────────────────
 
+// Flat shape, matching AnalysisResultResponse from GET /api/analyze/{task_id}
+// exactly (api/schemas.py) — the backend used to nest decision/order_result/
+// reports under a `result` key here only, while AnalysisPage.tsx always
+// read them flat (rawData?.decision) — so the results section silently
+// never rendered whenever this WebSocket was the active source, even
+// though `status` correctly showed "completed". See api/routers/
+// websocket.py's ws_analysis for the fix.
 interface AnalysisStatus {
   task_id: string;
   status: string;
   ticker?: string;
-  result?: any;
+  decision?: DecisionSummary | null;
+  order_result?: any;
+  reports?: Record<string, string | null>;
   error?: string;
 }
 

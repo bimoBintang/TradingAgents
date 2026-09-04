@@ -18,6 +18,7 @@ from tradingagents.llm_clients import create_llm_client
 from tradingagents.agents import *
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.utils.memory import FinancialSituationMemory
+from tradingagents.agents.utils.tool_compression import compress_tools
 from tradingagents.agents.utils.agent_states import (
     AgentState,
     InvestDebateState,
@@ -258,6 +259,8 @@ class TradingAgentsGraph:
             max_position_pct=portfolio_cfg.get("max_position_pct", 0.1),
             max_total_positions=portfolio_cfg.get("max_total_positions", 10),
             state_file=portfolio_cfg.get("state_file"),
+            kelly_enabled=portfolio_cfg.get("kelly_enabled", False),
+            kelly_multiplier=portfolio_cfg.get("kelly_multiplier", 0.25),
         )
 
         # ── Phase 2: Position Tracker ─────────────────────────────────
@@ -291,6 +294,13 @@ class TradingAgentsGraph:
                     consecutive_loss_limit=risk_cfg.get("consecutive_loss_limit", 3),
                     consecutive_loss_cooldown_seconds=risk_cfg.get("cooldown_seconds", 1800),
                     max_leverage=exec_cfg.get("max_leverage", 10),
+                    # Durable risk state. A new graph (and so a new
+                    # RiskController) is built for EVERY analysis in the
+                    # SaaS API — without these two the kill switch and the
+                    # loss history that triggers it reset before each
+                    # decision, i.e. the drawdown limits never bind.
+                    db=self.database,
+                    account_id=storage_cfg.get("account_id", "default"),
                 )
             else:
                 self.risk_controller = None
@@ -406,6 +416,11 @@ class TradingAgentsGraph:
         exec_cfg = self.config.get("execution", {})
         market_type = exec_cfg.get("market_type", "spot")
         max_leverage = exec_cfg.get("max_leverage", 10)
+        # User's configured margin preference (Settings > API Management >
+        # Margin Mode). Previously this dropdown was decorative — the
+        # trader prompt always hardcoded 'isolated' regardless of it.
+        margin_type = exec_cfg.get("margin_type", "isolated")
+        other_margin_type = "cross" if margin_type == "isolated" else "isolated"
 
         if market_type == "future":
             return (
@@ -415,7 +430,9 @@ class TradingAgentsGraph:
                 "• You CAN open LONG or SHORT positions.\n"
                 "• Choose leverage based on conviction: 1-3x (low), 5-10x (moderate), "
                 f"10-{max_leverage}x (aggressive). Never exceed {max_leverage}x.\n"
-                "• Default to 'isolated' margin. Use 'cross' only for hedged positions.\n"
+                f"• Default to '{margin_type}' margin as configured by the user. "
+                f"Use '{other_margin_type}' only when the situation clearly calls for it "
+                "(e.g. explicitly hedging an existing position).\n"
                 "• Higher leverage → smaller quantity_pct to manage risk.\n"
                 "• Always consider funding rate and liquidation distance."
             )
@@ -431,70 +448,78 @@ class TradingAgentsGraph:
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
+        # Settings > AI Language Models > "Compress tool output (RTK)" —
+        # see tradingagents/agents/utils/tool_compression.py. `rtk()`
+        # returns shallow-copied, wrapped tools when enabled, or the
+        # original list untouched when not — safe to call unconditionally.
+        rtk_enabled = self.config.get("compress_tool_output", False)
+        def rtk(tools):
+            return compress_tools(tools, enabled=rtk_enabled)
+
         return {
             "market": ToolNode(
-                [
+                rtk([
                     # Core stock data tools
                     get_stock_data,
                     # Technical indicators
                     get_indicators,
-                ]
+                ])
             ),
             "social": ToolNode(
-                [
+                rtk([
                     # News tools for social media analysis
                     get_news,
-                ]
+                ])
             ),
             "news": ToolNode(
-                [
+                rtk([
                     # News and insider information
                     get_news,
                     get_global_news,
                     get_insider_transactions,
-                ]
+                ])
             ),
             "fundamentals": ToolNode(
-                [
+                rtk([
                     # Fundamental analysis tools
                     get_fundamentals,
                     get_balance_sheet,
                     get_cashflow,
                     get_income_statement,
-                ]
+                ])
             ),
             # Phase 9: Advanced analyst tool nodes
             "quant": ToolNode(
-                [
+                rtk([
                     get_stock_data,
                     get_indicators,
                     get_options_chain,
-                ]
+                ])
             ),
             "onchain": ToolNode(
-                [
+                rtk([
                     get_onchain_metrics,
                     get_funding_rates,
-                ]
+                ])
             ),
             "macro_geo": ToolNode(
-                [
+                rtk([
                     get_global_news,
                     get_macro_indicators,
-                ]
+                ])
             ),
             "correlation": ToolNode(
-                [
+                rtk([
                     get_stock_data,
                     get_peer_data,
-                ]
+                ])
             ),
             # Phase 14: Polymarket prediction markets
             "prediction_market": ToolNode(
-                [
+                rtk([
                     get_prediction_markets,
                     get_market_price,
-                ]
+                ])
             ),
         }
 

@@ -5,6 +5,7 @@ Useful for testing strategies, developing new features, and backtesting.
 Uses volume-based slippage model for more realistic simulation.
 """
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -17,6 +18,8 @@ from tradingagents.execution.order_models import (
     PositionInfo,
 )
 from .broker_base import BaseBroker
+
+logger = logging.getLogger(__name__)
 
 
 class PaperBroker(BaseBroker):
@@ -63,6 +66,9 @@ class PaperBroker(BaseBroker):
         # Simulated prices (can be updated externally)
         self._prices: Dict[str, float] = {}
 
+        # Resting protective stops: order_id -> {ticker, side, quantity, stop_price}
+        self._resting_stops: Dict[str, dict] = {}
+
         print(f"[PaperBroker] Initialized with ${initial_cash:,.2f} cash (volume-based slippage)")
 
     def _calculate_slippage(self, order_value_usd: float) -> float:
@@ -92,10 +98,78 @@ class PaperBroker(BaseBroker):
             price: Simulated current price
         """
         self._prices[ticker] = price
+        self._check_resting_stops(ticker, price)
 
     def set_prices(self, prices: Dict[str, float]):
         """Set simulated prices for multiple tickers."""
         self._prices.update(prices)
+        for ticker, price in prices.items():
+            self._check_resting_stops(ticker, price)
+
+    # ── Protective stop simulation ────────────────────────────────────
+    #
+    # Paper mode must model stops, not ignore them. A simulator that fills
+    # entries but never fires stops reports the P&L of a strategy that
+    # never cuts a loss — flattering exactly the scenarios (fast adverse
+    # moves) that a stop exists for, and giving false confidence before
+    # real money is committed.
+
+    def place_stop_loss_order(
+        self,
+        ticker: str,
+        side: OrderSide,
+        quantity: float,
+        stop_price: float,
+        position_side: Optional[str] = None,
+    ) -> OrderResult:
+        """Register a resting protective stop, triggered by later price updates."""
+        order_id = f"paper_stop_{uuid.uuid4().hex[:12]}"
+        self._resting_stops[order_id] = {
+            "ticker": ticker,
+            "side": side,
+            "quantity": quantity,
+            "stop_price": stop_price,
+        }
+        logger.info(
+            "[PaperBroker] Protective stop registered: %s %s %s @ trigger %.8f",
+            side.value, quantity, ticker, stop_price,
+        )
+        return OrderResult(
+            order_id=order_id,
+            ticker=ticker,
+            side=side,
+            order_type=OrderType.STOP,
+            status=OrderStatus.SUBMITTED,
+            requested_quantity=quantity,
+            requested_price=stop_price,
+            broker_name=self.name,
+        )
+
+    def _check_resting_stops(self, ticker: str, price: float) -> None:
+        """Fire any resting stop whose trigger the new price has crossed."""
+        triggered = [
+            oid for oid, s in self._resting_stops.items()
+            if s["ticker"] == ticker and (
+                (s["side"] == OrderSide.SELL and price <= s["stop_price"])   # protecting a long
+                or (s["side"] == OrderSide.BUY and price >= s["stop_price"])  # protecting a short
+            )
+        ]
+        for oid in triggered:
+            stop = self._resting_stops.pop(oid)
+            logger.warning(
+                "[PaperBroker] STOP TRIGGERED %s: price %.8f crossed %.8f — closing %s",
+                ticker, price, stop["stop_price"], stop["quantity"],
+            )
+            self.place_order(
+                ticker=ticker,
+                side=stop["side"],
+                quantity=stop["quantity"],
+                order_type=OrderType.MARKET,
+            )
+
+    def cancel_stop_loss_order(self, order_id: str) -> bool:
+        """Remove a resting stop (e.g. when its position is closed another way)."""
+        return self._resting_stops.pop(order_id, None) is not None
 
     def place_order(
         self,

@@ -118,6 +118,8 @@ class ExecutionEngine:
 
         # Pending orders awaiting manual approval
         self._pending_orders: Dict[str, Dict[str, Any]] = {}
+        # ticker -> venue order id of its resting protective stop
+        self._protective_stops: Dict[str, str] = {}
         
         # Callback for automated reflection on position close
         self.on_position_closed: Optional[Callable[[str, float], None]] = None
@@ -151,6 +153,7 @@ class ExecutionEngine:
         decision_json: str,
         current_price: Optional[float] = None,
         idempotency_key: Optional[str] = None,
+        bypass_confirmation: bool = False,
     ) -> Optional[OrderResult]:
         """Execute a structured trade decision.
 
@@ -162,6 +165,19 @@ class ExecutionEngine:
             current_price: Current market price (fetched from broker if None)
             idempotency_key: Optional client-provided idempotency key. If None,
                              one is auto-generated from {ticker}_{action}_{timestamp_ms}.
+            bypass_confirmation: Skip ONLY the manual-approval queue step —
+                every other gate (kill switch, RiskController, fresh price,
+                position sizing, order-flow guard, leverage/margin setup,
+                protective stop) still runs.
+
+                This exists so the approval flow re-enters THIS function
+                rather than reimplementing the guard chain beside it. The
+                previous `approve_pending_order()` went straight from the
+                queue to `broker.place_order()`, silently skipping every
+                one of those gates — and since require_confirmation
+                defaults to True, that was the production path. Reusing
+                this function makes "the approve path forgot a guard"
+                structurally impossible.
 
         Returns:
             OrderResult if trade was executed, None if skipped/rejected
@@ -248,7 +264,7 @@ class ExecutionEngine:
             return None
 
         # Step 7: Manual confirmation for live trades
-        if self.require_confirmation:
+        if self.require_confirmation and not bypass_confirmation:
             # Save to pending queue — do NOT execute yet
             pending_info = {
                 "ticker": ticker,
@@ -299,15 +315,74 @@ class ExecutionEngine:
             # of_result == "EXECUTE" → proceed normally
 
         # Step 8: Execute order (only reached if require_confirmation=False)
-        # Futures pre-order setup: leverage & margin mode
+        #
+        # Futures pre-order setup: leverage & margin mode.
+        #
+        # The return values of set_leverage()/set_margin_mode() used to be
+        # discarded. That is a real-money defect, not a style issue: the
+        # RiskController sized and approved THIS position on the assumption
+        # of THIS leverage. If the venue refuses to change it, the order
+        # still goes out — but at whatever leverage the account happens to
+        # carry. An account left at 20x executing a position sized for 3x
+        # is running ~6.7x the risk that was actually authorized.
+        #
+        # So a failed leverage change aborts the trade. Refusing to trade
+        # costs an opportunity; trading at an unknown multiple of the
+        # intended risk costs the account.
         position_side_param = None
-        if hasattr(decision, 'leverage') and decision.leverage > 1:
+        # On a spot venue leverage is definitionally 1x, and set_leverage()
+        # reports False for "not applicable" the same way it does for
+        # "venue refused". Aborting there would be wrong: executing spot at
+        # 1x when the agent asked for 3x gives LESS exposure than approved,
+        # which is safe. Only a futures venue refusing the change is
+        # dangerous, so only that aborts.
+        broker_market_type = getattr(self.broker, "market_type", "spot")
+        leverage_applies = broker_market_type == "future"
+
+        if hasattr(decision, 'leverage') and decision.leverage > 1 and not leverage_applies:
+            logger.warning(
+                "Decision requested %dx leverage on a '%s' venue for %s — executing at 1x. "
+                "Exposure will be smaller than the agent intended.",
+                decision.leverage, broker_market_type, ticker,
+            )
+
+        if hasattr(decision, 'leverage') and decision.leverage > 1 and leverage_applies:
             if hasattr(self.broker, 'set_leverage'):
-                self.broker.set_leverage(ticker, decision.leverage)
+                if not self.broker.set_leverage(ticker, decision.leverage):
+                    self._log(
+                        "REJECTED",
+                        f"Could not set leverage to {decision.leverage}x on {ticker} — "
+                        "aborting rather than trading at an unknown leverage",
+                        ticker=ticker,
+                    )
+                    logger.error(
+                        "Leverage change to %dx REFUSED for %s — order aborted. The "
+                        "position would otherwise have used the account's existing "
+                        "leverage, invalidating the approved risk sizing.",
+                        decision.leverage, ticker,
+                    )
+                    return None
+
             if hasattr(self.broker, 'set_margin_mode'):
                 margin_mode = getattr(decision, 'margin_type', None)
                 if margin_mode:
-                    self.broker.set_margin_mode(ticker, margin_mode.value if hasattr(margin_mode, 'value') else str(margin_mode))
+                    mode_str = margin_mode.value if hasattr(margin_mode, 'value') else str(margin_mode)
+                    if not self.broker.set_margin_mode(ticker, mode_str):
+                        # Isolated vs cross decides whether a loss can reach
+                        # the rest of the account, so an unverified margin
+                        # mode is the same class of problem as leverage.
+                        self._log(
+                            "REJECTED",
+                            f"Could not set margin mode '{mode_str}' on {ticker} — aborting",
+                            ticker=ticker,
+                        )
+                        logger.error(
+                            "Margin mode '%s' REFUSED for %s — order aborted. Cross vs "
+                            "isolated determines whether this position can draw down the "
+                            "whole account.", mode_str, ticker,
+                        )
+                        return None
+
             if hasattr(decision, 'position_side'):
                 position_side_param = decision.position_side.value if hasattr(decision.position_side, 'value') else str(decision.position_side)
 
@@ -719,6 +794,16 @@ class ExecutionEngine:
                 if pos:
                     self.stop_loss_manager.register_position(pos)
 
+            # Rest the protective stop AT THE VENUE, immediately.
+            #
+            # Local stop tracking (StopLossManager above, PositionTracker,
+            # RealtimeFeed) only fires while this process is alive and
+            # polling — and RealtimeFeed is not started by the API server
+            # at all. Until this call existed, a filled position had a
+            # stop-loss price recorded in memory and nothing anywhere that
+            # would ever act on it.
+            self._place_protective_stop(ticker, result, sl_price, decision)
+
             # Phase 5: Log BUY fill to trade journal
             if self.journal:
                 self.journal.log_fill(result)
@@ -734,6 +819,10 @@ class ExecutionEngine:
                 exit_price=fill_price,
                 reasoning=decision.reasoning,
             )
+
+            # The position is gone — retire its resting stop so no orphan
+            # order is left at the venue.
+            self._cancel_protective_stop(ticker)
 
             # Unregister from tracker
             if self.position_tracker:
@@ -996,6 +1085,110 @@ class ExecutionEngine:
 
     # ── Reconciliation ────────────────────────────────────────────────
 
+    def _place_protective_stop(
+        self,
+        ticker: str,
+        entry_result: "OrderResult",
+        stop_price: Optional[float],
+        decision: "TradeDecision",
+    ) -> Optional[str]:
+        """Rest a stop-loss at the venue for a freshly filled position.
+
+        Returns the stop order id, or None if no stop is now protecting the
+        position — in which case this logs CRITICAL. An unprotected live
+        position is an operational incident, not a debug detail: it is the
+        state in which an adverse move has nothing standing in its way.
+
+        Never raises. A failure here must not unwind an entry that already
+        filled; the position exists either way, and the correct response is
+        to make that loudly visible rather than to crash the caller.
+        """
+        if not stop_price or stop_price <= 0:
+            logger.critical(
+                "NO STOP-LOSS for %s: the decision specified no stop price. "
+                "Position of %s is UNPROTECTED.",
+                ticker, entry_result.filled_quantity,
+            )
+            self._log("NO_STOP", f"{ticker} filled with no stop price — UNPROTECTED", ticker=ticker)
+            return None
+
+        # Closing side is the opposite of the entry.
+        close_side = OrderSide.SELL if entry_result.side == OrderSide.BUY else OrderSide.BUY
+        position_side = None
+        if getattr(decision, "position_side", None) is not None:
+            ps = decision.position_side
+            position_side = ps.value if hasattr(ps, "value") else str(ps)
+
+        try:
+            stop_result = self.broker.place_stop_loss_order(
+                ticker=ticker,
+                side=close_side,
+                quantity=entry_result.filled_quantity,
+                stop_price=stop_price,
+                position_side=position_side,
+            )
+        except NotImplementedError as e:
+            logger.critical(
+                "NO STOP-LOSS for %s: %s Position of %s is UNPROTECTED.",
+                ticker, e, entry_result.filled_quantity,
+            )
+            self._log("NO_STOP", f"{ticker}: broker cannot rest stops — UNPROTECTED", ticker=ticker)
+            return None
+        except Exception as e:
+            logger.critical(
+                "NO STOP-LOSS for %s: unexpected error placing stop: %s. "
+                "Position of %s is UNPROTECTED.",
+                ticker, e, entry_result.filled_quantity,
+            )
+            self._log("NO_STOP", f"{ticker}: stop placement error — UNPROTECTED", ticker=ticker)
+            return None
+
+        if stop_result is None or stop_result.status == OrderStatus.REJECTED:
+            reason = getattr(stop_result, "error_message", "unknown") if stop_result else "no result"
+            logger.critical(
+                "NO STOP-LOSS for %s: venue rejected the stop (%s). "
+                "Position of %s is UNPROTECTED.",
+                ticker, reason, entry_result.filled_quantity,
+            )
+            self._log("NO_STOP", f"{ticker}: venue rejected stop — UNPROTECTED", ticker=ticker)
+            if self.notifier:
+                try:
+                    self.notifier.send_alert(
+                        f"⚠️ UNPROTECTED POSITION: {ticker} filled but stop-loss was rejected."
+                    )
+                except Exception:
+                    pass
+            return None
+
+        self._protective_stops[ticker] = stop_result.order_id
+        self._log(
+            "STOP_PLACED",
+            f"Protective stop resting at venue for {ticker} @ {stop_price:.8f} "
+            f"(order {stop_result.order_id})",
+            ticker=ticker,
+        )
+        return stop_result.order_id
+
+    def _cancel_protective_stop(self, ticker: str) -> None:
+        """Cancel the resting stop for a position that closed another way.
+
+        Leaving an orphaned reduce-only stop is usually harmless, but on
+        venues that ignore reduce-only it could open a fresh position in
+        the opposite direction — so it is cancelled explicitly rather than
+        left to the exchange's behaviour.
+        """
+        order_id = self._protective_stops.pop(ticker, None)
+        if not order_id:
+            return
+        try:
+            if hasattr(self.broker, "cancel_stop_loss_order"):
+                self.broker.cancel_stop_loss_order(order_id)
+            else:
+                self.broker.cancel_order(order_id, symbol=ticker)
+            self._log("STOP_CANCELLED", f"Protective stop {order_id} cancelled for {ticker}", ticker=ticker)
+        except Exception as e:
+            logger.warning("Could not cancel protective stop %s for %s: %s", order_id, ticker, e)
+
     def reconcile(self) -> Dict[str, Any]:
         """Reconcile local portfolio with actual broker positions.
 
@@ -1102,62 +1295,81 @@ class ExecutionEngine:
         """Get all pending orders awaiting manual approval."""
         return list(self._pending_orders.values())
 
-    def approve_pending_order(self, idempotency_key: str) -> Optional[OrderResult]:
-        """Approve and execute a pending order.
+    def execute_approved_order(
+        self,
+        decision_json: str,
+        idempotency_key: str,
+    ) -> Optional[OrderResult]:
+        """Execute a human-approved order, re-running every safety gate.
 
-        Removes the order from the pending queue and sends it
-        to the broker.
+        A user's approval authorizes the INTENT to trade. It does not
+        authorize skipping the checks, and it does not freeze the market:
+        between the decision and the click, the kill switch may have
+        tripped, the daily loss limit may have been breached, the position
+        count may have changed, and the price has almost certainly moved.
+
+        So this deliberately re-enters `execute_decision()` rather than
+        going straight to the broker. That re-runs, at approval time:
+          - kill switch and consecutive-loss cooldown (now durable —
+            see RiskController's persisted state)
+          - the full RiskController evaluation, including sizing
+          - a FRESH price fetch, with quantity recomputed from it
+            (the old path sized off the price captured at decision time)
+          - the order-flow guard
+          - futures leverage / margin-mode setup
+          - placement of the venue-resident protective stop
+
+        The predecessor of this method did none of that: it popped the
+        queue and called `broker.place_order()` directly. Because
+        `require_confirmation` defaults to True, that WAS the production
+        execution path — every guard in this engine was bypassed on every
+        real trade.
 
         Args:
-            idempotency_key: The unique key of the pending order
+            decision_json: The stored TradeDecision payload from the
+                pending record — the same text the user reviewed.
+            idempotency_key: The pending order's key, reused so an
+                approval that is retried (double click, network retry)
+                cannot place two orders.
 
         Returns:
-            OrderResult if trade was executed, None if not found or failed
+            OrderResult if executed, None if any gate rejected it.
         """
-        pending = self._pending_orders.pop(idempotency_key, None)
-        if pending is None:
-            logger.warning("No pending order found with key=%s", idempotency_key)
-            return None
+        self._pending_orders.pop(idempotency_key, None)
 
-        ticker = pending["ticker"]
-        quantity = pending["quantity"]
-        order_side = pending["order_side"]
-        current_price = pending["price"]
+        # The key was consumed when the order was queued; clear it so the
+        # idempotency check admits this execution, while still blocking a
+        # SECOND approval of the same key.
+        self._processed_idempotency_keys.discard(idempotency_key)
 
-        self._log(
-            "APPROVED",
-            f"{pending['action']} {quantity} {ticker} "
-            f"@ ${current_price:,.4f} — approved by user",
-            ticker=ticker,
+        self._log("APPROVED", f"User approved order {idempotency_key} — revalidating", )
+
+        return self.execute_decision(
+            decision_json=decision_json,
+            current_price=None,        # force a fresh quote, never the stale one
+            idempotency_key=idempotency_key,
+            bypass_confirmation=True,  # only the queue step is skipped
         )
 
-        # Parse order_type from pending info
-        order_type_str = pending.get("order_type", "MARKET")
-        order_type = OrderType.MARKET
-        if order_type_str == "LIMIT":
-            order_type = OrderType.LIMIT
+    # Backwards-compatible alias. The old name implied "approve" was the
+    # whole operation; the work is re-validation plus execution.
+    def approve_pending_order(self, idempotency_key: str) -> Optional[OrderResult]:
+        """Deprecated: use execute_approved_order(decision_json, key).
 
-        # Execute the order
-        try:
-            result = self.broker.place_order(
-                ticker=ticker,
-                side=order_side,
-                quantity=quantity,
-                order_type=order_type,
+        Kept so existing callers do not silently break, but it can only
+        work when the pending order is still in this process's in-memory
+        queue — which, with a new graph per analysis, it usually is not.
+        """
+        pending = self._pending_orders.get(idempotency_key)
+        if pending is None:
+            logger.warning(
+                "No in-memory pending order with key=%s. Pending orders are persisted "
+                "per user by the API layer; call execute_approved_order() with the "
+                "stored decision_json instead.",
+                idempotency_key,
             )
-
-            if result and (result.is_filled or result.is_partial):
-                # Re-parse decision for portfolio update
-                decision = self._parse_decision(pending["decision_json"])
-                if decision:
-                    self._handle_fill(decision, result, current_price)
-
-            return result
-
-        except Exception as e:
-            self._log("FAILED", f"Approved order execution failed: {e}", ticker=ticker)
-            logger.error("Failed to execute approved order %s: %s", idempotency_key, e)
             return None
+        return self.execute_approved_order(pending["decision_json"], idempotency_key)
 
     def reject_pending_order(self, idempotency_key: str) -> bool:
         """Reject a pending order — removes it from queue without executing.

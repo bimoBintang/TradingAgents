@@ -67,6 +67,20 @@ def generate_report(
     lines.append(f"| Max Drawdown | {metrics.max_drawdown_pct:.2f}% |")
     lines.append("")
 
+    # Exit-rule breakdown — separates "the signal was right" from "the
+    # stop/target placement happened to be lucky". A strategy whose
+    # profits come almost entirely from take-profit hits is a different
+    # (and more fragile) animal than one that wins on time exits.
+    lines.append("## How Positions Closed")
+    lines.append("")
+    lines.append("| Exit Reason | Count |")
+    lines.append("|-------------|-------|")
+    lines.append(f"| Stop-Loss | {metrics.stop_loss_exits} |")
+    lines.append(f"| Take-Profit | {metrics.take_profit_exits} |")
+    lines.append(f"| Time / Horizon | {metrics.time_exits} |")
+    lines.append(f"| Avg Holding Period | {metrics.avg_holding_days:.1f} days |")
+    lines.append("")
+
     # Confidence Calibration
     lines.append("## Confidence Calibration")
     lines.append("")
@@ -88,8 +102,8 @@ def generate_report(
     # Per-Trade Detail
     lines.append("## Trade Log")
     lines.append("")
-    lines.append("| Date | Decision | Conf | Entry | Next Day | Return | Correct |")
-    lines.append("|------|----------|------|-------|----------|--------|---------|")
+    lines.append("| Entry | Decision | Conf | Size | Entry $ | Exit $ | Exit | Held | Net Return | Correct |")
+    lines.append("|-------|----------|------|------|---------|--------|------|------|------------|---------|")
     for t in metrics.trades:
         correct_str = ""
         if t.direction_correct is True:
@@ -101,8 +115,10 @@ def generate_report(
 
         lines.append(
             f"| {t.date} | {t.decision} | {t.confidence:.2f} "
-            f"| ${t.entry_price:.2f} | ${t.next_day_price:.2f} "
-            f"| {t.actual_return_pct:+.2f}% | {correct_str} |"
+            f"| {t.quantity_pct * 100:.0f}% "
+            f"| ${t.entry_price:.2f} | ${t.exit_price:.2f} "
+            f"| {t.exit_reason} | {t.holding_days}d "
+            f"| {t.strategy_return_pct:+.2f}% | {correct_str} |"
         )
     lines.append("")
 

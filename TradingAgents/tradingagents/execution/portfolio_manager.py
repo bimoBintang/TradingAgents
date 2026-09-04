@@ -74,6 +74,8 @@ class PortfolioManager:
         max_position_pct: float = 0.1,
         max_total_positions: int = 10,
         state_file: Optional[str] = None,
+        kelly_enabled: bool = False,
+        kelly_multiplier: float = 0.25,
     ):
         """Initialize the portfolio manager.
 
@@ -82,12 +84,20 @@ class PortfolioManager:
             max_position_pct: Maximum percentage of portfolio per position (0.0-1.0)
             max_total_positions: Maximum number of concurrent positions
             state_file: Optional file path to persist state (JSON)
+            kelly_enabled: Cap position size by fractional Kelly computed
+                from this portfolio's own realized trade history. Off by
+                default: with too few completed trades there is no edge to
+                measure, and the cap would just be noise. See
+                kelly_cap_pct() for the safeguards.
+            kelly_multiplier: 0.25 = quarter-Kelly (default), 0.5 = half-Kelly.
         """
         self.initial_cash = initial_cash
         self.cash_balance = initial_cash
         self.max_position_pct = max_position_pct
         self.max_total_positions = max_total_positions
         self.state_file = state_file
+        self.kelly_enabled = kelly_enabled
+        self.kelly_multiplier = kelly_multiplier
 
         # Open positions: ticker -> PositionInfo
         self.positions: Dict[str, PositionInfo] = {}
@@ -238,6 +248,41 @@ class PortfolioManager:
 
     # ── Position Sizing ───────────────────────────────────────────────
 
+    def kelly_cap_pct(self) -> Optional[float]:
+        """Fractional-Kelly ceiling on allocation, from realized trade history.
+
+        Returns None when there is no statistically usable edge yet — the
+        caller must then fall back to its normal cap rather than treating
+        None as zero.
+
+        Deliberately computed from THIS portfolio's own closed trades
+        (real fills, real slippage), never from backtest output. Sizing off
+        the same data a strategy was tuned on is how Kelly turns
+        overfitting into leverage.
+        """
+        if not self.kelly_enabled:
+            return None
+
+        from tradingagents.execution.position_sizing import (
+            kelly_fraction_continuous, MIN_TRADES_FOR_EDGE,
+        )
+
+        returns: List[float] = []
+        for t in self.trade_history:
+            notional = t.entry_price * t.quantity
+            if notional > 0:
+                returns.append(t.pnl / notional)
+
+        if len(returns) < MIN_TRADES_FOR_EDGE:
+            return None
+
+        kelly = kelly_fraction_continuous(
+            returns,
+            kelly_multiplier=self.kelly_multiplier,
+            max_fraction=self.max_position_pct,
+        )
+        return kelly if kelly > 0 else None
+
     def calculate_position_size(
         self,
         decision: TradeDecision,
@@ -257,6 +302,18 @@ class PortfolioManager:
 
         # Cap allocation at max_position_pct
         allocation_pct = min(decision.quantity_pct, self.max_position_pct)
+
+        # Optional Kelly ceiling — can only SHRINK the allocation, never
+        # grow it. If the measured edge justifies more than the agent
+        # asked for, we still defer to the agent's (smaller) number:
+        # Kelly's job here is to veto oversizing, not to encourage it.
+        kelly_cap = self.kelly_cap_pct()
+        if kelly_cap is not None and kelly_cap < allocation_pct:
+            logger.info(
+                "Kelly cap applied: %.2f%% -> %.2f%% (from %d closed trades)",
+                allocation_pct * 100, kelly_cap * 100, len(self.trade_history),
+            )
+            allocation_pct = kelly_cap
 
         # Calculate dollar amount
         dollar_amount = self.total_equity * allocation_pct

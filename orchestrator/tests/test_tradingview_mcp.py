@@ -72,12 +72,19 @@ def test_preset_tradingview_mcp_tool_registration():
 
 
 def test_write_pinescript_verification(mcp_client):
-    """Test Pine Script writing and syntax verification."""
+    """Test Pine Script writing when TradingView Desktop isn't connected.
+
+    Previously this asserted compiled=True unconditionally — that was
+    testing a hardcoded fake success (the fallback path used to always
+    claim "compiled" regardless of whether anything was actually sent
+    anywhere). With no CDP running (the case in CI/this test env),
+    nothing was compiled, so compiled=False is the honest, correct result.
+    """
     code = "indicator('My RSI', overlay=true)\nplot(ta.rsi(close, 14))"
     res = asyncio.run(mcp_client.write_pinescript(code, "Test_RSI"))
     assert res["script_name"] == "Test_RSI"
-    assert res["compiled"] is True
-    assert "status" in res
+    assert res["compiled"] is False
+    assert res["status"] == "unavailable"
 
 
 def test_manage_alert_execution(mcp_client):
@@ -89,13 +96,24 @@ def test_manage_alert_execution(mcp_client):
 
 
 def test_chart_vision_agent_execution():
-    """Test ChartVisionAgent handler integration with Orchestrator."""
+    """Test ChartVisionAgent handler integration with Orchestrator.
+
+    Previously this asserted primary_trend was always one of
+    BULLISH/BEARISH/SIDEWAYS — that was testing a hardcoded lookup table
+    that fabricated a trend from the SAME quantitative TA numbers already
+    shown elsewhere, regardless of whether any actual chart image was
+    ever analyzed. With no CDP running and no client-side fallback
+    screenshot supplied (the case here), there's no image to analyze, so
+    mode="UNAVAILABLE" with primary_trend=None is the honest, correct
+    result — not a guess dressed up as a vision analysis.
+    """
     from orchestrator.sdk import create_trading_orchestrator, chart_vision_agent_handler
     orch = create_trading_orchestrator(ticker="BTCUSDT", topology="pipeline")
     report = asyncio.run(chart_vision_agent_handler(orch.state, orch.bus, orch.tools))
 
     assert report["ticker"] == "BTCUSDT"
-    assert report["primary_trend"] in ["BULLISH", "BEARISH", "SIDEWAYS"]
+    assert report["mode"] == "UNAVAILABLE"
+    assert report["primary_trend"] is None
     assert "visual_confidence" in report
     # Check that report is stored in StateManager
     state_report = orch.state.get("analysis", "chart_vision_report")

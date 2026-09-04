@@ -53,3 +53,13 @@ mcp[cli]>=1.2.0
 pytest>=8.0.0
 pytest-asyncio>=0.24.0
 
+# ==================== Runtime deps missing from this file ====================
+# All four below were imported by api/main.py's router chain (directly or via
+# orchestrator/mcp/tradingview_mcp_client.py) but not declared here — a fresh
+# `pip install -r requirements.txt` + `uvicorn api.main:app` crashed on each
+# in turn at import time until installed manually (2026-08-27).
+Pillow>=10.0.0                # orchestrator/mcp/tradingview_mcp_client.py — screenshot handling
+tradingview-ta>=3.3.0         # tradingagents/dataflows/tradingview.py — TA_Handler/Interval
+APScheduler>=3.10.0           # tradingagents/scheduler/scheduler.py
+sqlite-vec>=0.1.9             # vector memory storage backend
+playwright>=1.62.0            # orchestrator/mcp/tradingview_mcp_client.py — CDP automation (connect_over_cdp only, no browser download needed)

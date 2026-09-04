@@ -6,14 +6,16 @@ Results persisted to TaskResult DB table for both modes.
 
 import json
 import logging
+from typing import Any, Optional
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from api.schemas import AnalyzeRequest, AnalyzeResponse, AnalysisResultResponse
+from api.schemas import AnalyzeRequest, AnalyzeResponse, AnalysisResultResponse, DecisionSummary
 from api.dependencies import get_graph
+from api.limiter import limiter, ANALYZE_RATE_LIMIT
 from api.auth import get_current_user
 from api.models import User, TaskResult
 from api.database import get_db
@@ -22,9 +24,64 @@ logger = logging.getLogger("api.analysis")
 
 router = APIRouter(prefix="/api", tags=["Analysis"])
 
+_VALID_ACTIONS = {"BUY", "SELL", "HOLD", "STRONG_BUY", "STRONG_SELL"}
+
+
+def _parse_decision(raw: Any) -> Optional[DecisionSummary]:
+    """Normalize the Trader's decision into one consistent shape.
+
+    `raw` (tradingagents.graph.signal_processing.SignalProcessor.process_signal's
+    return value, stored as-is in TaskResult) is ALWAYS a string, but one of
+    two different things depending on whether structured extraction
+    succeeded: a JSON-encoded TradeDecision, or a bare fallback action word.
+    This is the single place that distinction gets resolved — see
+    DecisionSummary's docstring for why that matters and what broke before.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, dict) and "action" in parsed:
+        action = str(parsed.get("action", "HOLD")).upper()
+        return DecisionSummary(
+            action=action if action in _VALID_ACTIONS else "HOLD",
+            is_structured=True,
+            raw_text=raw,
+            ticker=parsed.get("ticker"),
+            confidence_score=parsed.get("confidence_score"),
+            quantity_pct=parsed.get("quantity_pct"),
+            order_type=parsed.get("order_type"),
+            limit_price=parsed.get("limit_price"),
+            stop_loss_pct=parsed.get("stop_loss_pct"),
+            take_profit_pct=parsed.get("take_profit_pct"),
+            reasoning=parsed.get("reasoning"),
+            key_factors=parsed.get("key_factors"),
+            risk_reward_ratio=parsed.get("risk_reward_ratio"),
+            time_horizon=parsed.get("time_horizon"),
+            leverage=parsed.get("leverage"),
+            position_side=parsed.get("position_side"),
+            margin_type=parsed.get("margin_type"),
+        )
+
+    # Fallback path: process_signal() returned a bare action word (structured
+    # extraction failed) — normalize it to the exact same shape, just with
+    # only the fields a plain string can actually tell us.
+    action = raw.strip().upper()
+    return DecisionSummary(
+        action=action if action in _VALID_ACTIONS else "HOLD",
+        is_structured=False,
+        raw_text=raw,
+    )
+
 
 @router.post("/analyze", response_model=AnalyzeResponse)
+@limiter.limit(ANALYZE_RATE_LIMIT)
 async def start_analysis(
+    request: Request,
     body: AnalyzeRequest,
     graph=Depends(get_graph),
     user: User = Depends(get_current_user),
@@ -97,7 +154,7 @@ async def get_analysis_result(
     if task_row.result_json:
         try:
             result = json.loads(task_row.result_json)
-            decision = result.get("decision")
+            decision = _parse_decision(result.get("decision"))
             order_result = result.get("order_result")
             reports = result.get("reports")
         except json.JSONDecodeError:

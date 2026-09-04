@@ -124,6 +124,46 @@ class BaseBroker(ABC):
         """
         ...
 
+    def place_stop_loss_order(
+        self,
+        ticker: str,
+        side: OrderSide,
+        quantity: float,
+        stop_price: float,
+        position_side: Optional[str] = None,
+    ) -> OrderResult:
+        """Place a protective stop-loss order that rests AT THE VENUE.
+
+        This is the difference between a stop that exists and a stop that
+        is merely intended. An exchange-resident stop still fires when this
+        process has crashed, the host has lost power, or the network is
+        partitioned — precisely the moments a position is most likely to be
+        moving against you. A stop tracked only in local memory protects
+        nothing in any of those cases.
+
+        Args:
+            ticker: Asset to protect.
+            side: Side of the CLOSING order (SELL to protect a long,
+                BUY to protect a short) — not the side of the entry.
+            quantity: Size to close.
+            stop_price: Trigger price.
+            position_side: Futures hedge mode: "LONG" or "SHORT".
+
+        Returns:
+            OrderResult for the resting stop order.
+
+        Raises:
+            NotImplementedError: If this broker cannot rest a stop at the
+                venue. Deliberately raises instead of returning a rejected
+                OrderResult, so a caller cannot mistake "unsupported" for
+                "placed and working" — an unprotected position must be an
+                explicit, loud condition.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support venue-resident stop-loss orders. "
+            "Any position opened through it is UNPROTECTED if this process stops running."
+        )
+
     def get_order_book(self, ticker: str, depth: int = 20) -> Optional[dict]:
         """Fetch Level 2 order book data for a ticker.
 
@@ -134,23 +174,42 @@ class BaseBroker(ABC):
         """
         return None
 
+    def fetch_balance_strict(self) -> Dict[str, float]:
+        """Fetch balance WITHOUT swallowing errors — used for real connectivity checks.
+
+        `get_balance()` is deliberately resilient for UI display: brokers
+        like CcxtBroker/AlpacaBroker catch every exception there (bad
+        credentials, network errors, ...) and return a zeroed fallback dict
+        so a transient hiccup doesn't crash the dashboard. That resilience
+        means `get_balance()` NEVER raises — which makes it useless as a
+        connectivity/credentials check: `health_check()` calling it would
+        report "healthy" for literally any api_key/api_secret, valid or not.
+
+        Default implementation delegates to get_balance() (fine for brokers
+        with no swallow-on-failure behavior, e.g. PaperBroker, which never
+        makes network calls). CcxtBroker and AlpacaBroker MUST override this
+        with a raw, unguarded fetch so real failures propagate.
+        """
+        return self.get_balance()
+
     def health_check(self) -> bool:
         """Verify broker connectivity and basic functionality.
 
-        Attempts to fetch the account balance as a connectivity test.
+        Attempts an unguarded account balance fetch as a connectivity test —
+        see `fetch_balance_strict()` for why this must NOT be `get_balance()`.
         Subclasses may override with more specific checks.
 
         Returns:
             True if broker is healthy
 
         Raises:
-            BrokerConnectionError: if broker is unreachable
+            BrokerConnectionError: if broker is unreachable or credentials are invalid
         """
         try:
-            balance = self.get_balance()
+            balance = self.fetch_balance_strict()
             if not isinstance(balance, dict):
                 raise BrokerConnectionError(
-                    self.name, "get_balance() returned invalid response"
+                    self.name, "balance fetch returned invalid response"
                 )
             return True
         except BrokerConnectionError:

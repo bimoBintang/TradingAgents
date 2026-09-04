@@ -38,8 +38,21 @@ connect_args = {}
 engine_kwargs = {}
 
 if "sqlite" in DATABASE_URL:
-    # SQLite: disable same-thread check for FastAPI async
-    connect_args = {"check_same_thread": False}
+    # SQLite: disable same-thread check for FastAPI async.
+    #
+    # `timeout` is the busy timeout, and it matters here more than it looks.
+    # This process writes to one SQLite file from several places at once:
+    # request handlers, the background analysis thread (api/tasks.py), the
+    # balance-sync scheduler job, and the benchmark resolver. SQLite's
+    # default busy timeout is 0 — a writer that finds the database locked
+    # fails INSTANTLY with "database is locked" rather than waiting.
+    #
+    # For a trading system that is a correctness problem, not a nuisance:
+    # a failed write while recording a fill leaves the order live at the
+    # exchange with no local record of it, which is exactly the drift that
+    # reconciliation then has to guess about. 30s of waiting is cheap
+    # compared to losing a trade record.
+    connect_args = {"check_same_thread": False, "timeout": 30.0}
 elif "postgresql" in DATABASE_URL:
     # PostgreSQL: enable connection health checks & pool recycling
     engine_kwargs = {
@@ -54,6 +67,32 @@ engine = create_engine(
     connect_args=connect_args,
     **engine_kwargs,
 )
+
+if "sqlite" in DATABASE_URL:
+    # WAL lets readers proceed while a write is in flight. In the default
+    # rollback-journal mode a single writer blocks every reader, so one
+    # slow write (a fill being recorded, a balance sync) stalls unrelated
+    # dashboard requests and makes lock contention far more likely.
+    #
+    # Applied per connection rather than once, because SQLAlchemy's pool
+    # opens new connections over the process's lifetime and a PRAGMA only
+    # affects the connection it runs on. journal_mode=WAL persists in the
+    # database file itself; busy_timeout and synchronous do not.
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            # NORMAL is the standard durability/throughput trade-off under
+            # WAL: safe against process crashes, and only at risk of losing
+            # the most recent commits in an OS-level crash or power loss.
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
 
 logger.info("Database engine created: %s", engine.url.get_backend_name())
 

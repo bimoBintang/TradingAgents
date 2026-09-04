@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { cx } from '../utils/cx';
-import { Key, Bell, Shield, Brain, Monitor, CheckCircle2, AlertCircle, Loader2, Save, Zap, Cpu, Server, Settings2, Send, Activity, TrendingDown, Calendar, Clock, MessageSquare, Target, ShieldAlert, Crosshair, Plug } from 'lucide-react';
+import { Key, Bell, Shield, Brain, Monitor, CheckCircle2, AlertCircle, AlertTriangle, Loader2, Save, Zap, Cpu, Server, Settings2, Send, Activity, TrendingDown, Calendar, Clock, MessageSquare, Target, ShieldAlert, Crosshair, Plug, X, Minimize2 } from 'lucide-react';
 import { useConfig } from '../hooks/useApi';
 import { api } from '../services/api';
+import { diffConfig } from '../utils/configDiff';
 
 const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void }> = ({ enabled, onChange }) => (
   <button 
@@ -28,8 +29,25 @@ export const SystemSettingsPage: React.FC = () => {
   const config = configData?.config ?? {};
 
   const [localConfig, setLocalConfig] = useState<Record<string, any>>({});
+  // The last-synced server snapshot — diffed against localConfig at save
+  // time so only fields actually touched on THIS page get sent (see
+  // src/utils/configDiff.ts). Always updated in lockstep with
+  // localConfig below, never independently.
+  const [baselineConfig, setBaselineConfig] = useState<Record<string, any>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Broker connection test (Settings > Connect Broker or Exchange)
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Live-trading confirmation gate (Execution Mode). The backend derives
+  // execution.mode/broker from whether real credentials are present
+  // (api/user_context.py's "auto-upgrade"), NOT from the Paper/Live
+  // buttons above — so simply having valid credentials filled in and
+  // hitting Save silently flips the account to LIVE real-money trading
+  // with zero explicit confirmation. Gate that transition here instead.
+  const [showLiveConfirm, setShowLiveConfirm] = useState(false);
 
   // Friendly names for models
   const MODEL_LABELS: Record<string, string> = {
@@ -52,14 +70,22 @@ export const SystemSettingsPage: React.FC = () => {
 
   const [hasChanges, setHasChanges] = useState(false);
 
+  // Sync local state when config loads — but NEVER while the user has
+  // unsaved edits (hasChanges). useConfig() polls every 60s; without this
+  // guard, a background refresh (someone else's save, the balance-sync
+  // job, another browser tab) would silently blow away whatever the user
+  // was mid-way through editing here.
   useEffect(() => {
+    if (hasChanges) return;
     if (config && Object.keys(config).length > 0) {
       setLocalConfig(config);
+      setBaselineConfig(config);
     }
-  }, [JSON.stringify(config)]);
+  }, [JSON.stringify(config), hasChanges]);
 
   const setNestedValue = (path: string, value: any) => {
     setHasChanges(true);
+    if (path.startsWith('execution.')) setTestResult(null); // stale test result no longer applies
     setLocalConfig(prev => {
       const parts = path.split('.');
       const updated = JSON.parse(JSON.stringify(prev));
@@ -73,10 +99,16 @@ export const SystemSettingsPage: React.FC = () => {
     });
   };
 
-  const handleSave = useCallback(async () => {
+  const performSave = useCallback(async () => {
     setSaving(true);
+    setShowLiveConfirm(false);
     try {
-      await api.updateConfig(localConfig);
+      // Send only what actually changed on this page — not the whole
+      // snapshot (see diffConfig's doc comment for why that matters).
+      const updates = diffConfig(baselineConfig, localConfig);
+      if (Object.keys(updates).length > 0) {
+        await api.updateConfig(updates);
+      }
       await refetch();
       setSaved(true);
       setHasChanges(false);
@@ -86,7 +118,64 @@ export const SystemSettingsPage: React.FC = () => {
     } finally {
       setSaving(false);
     }
-  }, [localConfig, refetch]);
+  }, [localConfig, baselineConfig, refetch]);
+
+  const handleSave = useCallback(() => {
+    const exec = localConfig.execution ?? {};
+    const serverExec: any = config.execution ?? {};
+
+    // Mirrors api/user_context.py's auto-upgrade condition EXACTLY:
+    // has_api_key && has_api_secret && has_exchange → live. Note the
+    // backend does NOT check `broker` as a gate — only as something it
+    // overwrites — so a stray `broker: 'paper'` in the form (e.g. an
+    // exchange card was never clicked, or a leftover value) would NOT
+    // stop the backend from going live once all three are filled in.
+    // Checking `exec.broker !== 'paper'` here would create exactly the
+    // blind spot this gate exists to close, so it's deliberately omitted.
+    const wouldBeLive = !!exec.exchange && !!exec.api_key && !!exec.api_secret;
+    const currentlyLive = serverExec.mode === 'live';
+
+    if (wouldBeLive && !currentlyLive) {
+      setShowLiveConfirm(true);
+      return;
+    }
+    performSave();
+  }, [localConfig, config, performSave]);
+
+  const handleTestConnection = useCallback(async () => {
+    const exec = localConfig.execution ?? {};
+
+    // Guard client-side too: paper has no real account, and a ccxt broker
+    // needs an exchange picked — don't even round-trip for those.
+    if (exec.broker === 'paper' || !exec.broker) {
+      setTestResult({ success: false, message: 'Select an exchange or broker card above first — Paper Trading has no real account to test.' });
+      return;
+    }
+    if (exec.broker === 'ccxt' && !exec.exchange) {
+      setTestResult({ success: false, message: 'No exchange selected — pick one of the exchange cards above before testing.' });
+      return;
+    }
+
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await api.testBrokerConnection({
+        broker: exec.broker ?? 'ccxt',
+        exchange: exec.exchange ?? null,
+        api_key: exec.api_key ?? '',
+        api_secret: exec.api_secret ?? '',
+        password: exec.password ?? '',
+        sandbox: exec.sandbox ?? true,
+        market_type: exec.market_type ?? 'spot',
+        quote_currency: exec.quote_currency ?? 'USDT',
+      });
+      setTestResult({ success: res.success, message: res.message });
+    } catch (e: any) {
+      setTestResult({ success: false, message: e?.message || 'Connection test failed.' });
+    } finally {
+      setTestingConnection(false);
+    }
+  }, [localConfig]);
 
   if (loading && Object.keys(localConfig).length === 0) {
     return (
@@ -215,6 +304,7 @@ export const SystemSettingsPage: React.FC = () => {
                         { id: 'binance',  label: 'Binance',  abbr: 'BN', color: 'text-yellow-500', bg: 'bg-yellow-500/10' },
                         { id: 'bybit',    label: 'Bybit',    abbr: 'BY', color: 'text-amber-500',  bg: 'bg-amber-500/10' },
                         { id: 'okx',      label: 'OKX',      abbr: 'OK', color: 'text-white',      bg: 'bg-slate-600/20' },
+                        { id: 'bitget',   label: 'Bitget',   abbr: 'BG', color: 'text-sky-400',    bg: 'bg-sky-500/10' },
                         { id: 'kucoin',   label: 'KuCoin',   abbr: 'KC', color: 'text-teal-400',   bg: 'bg-teal-500/10' },
                         { id: 'coinbase', label: 'Coinbase', abbr: 'CB', color: 'text-blue-400',   bg: 'bg-blue-500/10' },
                         { id: 'kraken',   label: 'Kraken',   abbr: 'KR', color: 'text-purple-400', bg: 'bg-purple-500/10' },
@@ -354,19 +444,43 @@ export const SystemSettingsPage: React.FC = () => {
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 items-center justify-between">
                           <span>Passphrase</span>
-                          {(execution.exchange === 'okx' || execution.exchange === 'kucoin') 
-                            ? <span className="text-rose-400 text-[10px] bg-rose-500/10 px-2 py-0.5 rounded ml-2">Required Here</span> 
+                          {(execution.exchange === 'okx' || execution.exchange === 'kucoin' || execution.exchange === 'bitget')
+                            ? <span className="text-rose-400 text-[10px] bg-rose-500/10 px-2 py-0.5 rounded ml-2">Required Here</span>
                             : <span className="text-slate-500 text-[10px] ml-2">Optional</span>
                           }
                         </label>
-                        <input 
+                        <input
                           type="password"
                           value={execution.password ?? ''}
                           onChange={(e) => setNestedValue('execution.password', e.target.value)}
-                          placeholder="Required for OKX/Kucoin"
+                          placeholder="Required for OKX/KuCoin/Bitget"
                           className="w-full bg-slate-900 border border-slate-700/50 text-slate-200 text-sm rounded-lg p-3 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 font-mono transition-all"
                         />
                       </div>
+                    </div>
+
+                    {/* Test Connection */}
+                    <div className="flex flex-col md:flex-row md:items-center gap-3 mt-6 pt-6 border-t border-slate-800/50">
+                      <button
+                        onClick={handleTestConnection}
+                        disabled={testingConnection || (execution.broker !== 'paper' && !execution.api_key)}
+                        className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-bold border transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700 hover:border-slate-600 w-full md:w-auto"
+                      >
+                        {testingConnection ? <Loader2 size={16} className="animate-spin" /> : <Plug size={16} />}
+                        {testingConnection ? 'Testing Connection…' : 'Test Connection'}
+                      </button>
+
+                      {testResult && (
+                        <div className={cx(
+                          "flex items-start gap-2 px-4 py-2.5 rounded-lg text-sm font-medium flex-1",
+                          testResult.success
+                            ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-400"
+                            : "bg-rose-500/10 border border-rose-500/30 text-rose-400"
+                        )}>
+                          {testResult.success ? <CheckCircle2 size={16} className="shrink-0 mt-0.5" /> : <AlertCircle size={16} className="shrink-0 mt-0.5" />}
+                          <span>{testResult.message}</span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Futures & Leverage Setup */}
@@ -547,16 +661,21 @@ export const SystemSettingsPage: React.FC = () => {
                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
                          <span>Block (Cancel) Threshold</span>
                          <span className="text-rose-400 font-mono font-bold">
-                           -{order_flow.obi_block_threshold ?? 0.3}
+                           -{Math.abs(order_flow.obi_block_threshold ?? -0.3)}
                          </span>
                        </label>
                        <p className="text-xs text-slate-500 leading-relaxed -mt-2">
                          Maximum negative OBI before the trade is canceled. <span className="text-rose-400 bg-rose-500/10 px-1 rounded">Default: -0.3</span> (Strong sell pressure).
                        </p>
-                       <input 
+                       <input
                          type="range" min="0" max="0.9" step="0.05"
-                         value={order_flow.obi_block_threshold ?? 0.3}
-                         onChange={(e) => setNestedValue('order_flow.obi_block_threshold', parseFloat(e.target.value))}
+                         // Backend compares `effective_obi <= obi_block_threshold` and expects a
+                         // NEGATIVE number (default -0.30). This slider only produces a magnitude
+                         // (0-0.9), so it's negated on the way in/out — storing it positive would
+                         // silently invert the guard (it'd block almost every trade instead of
+                         // only strong sell-pressure ones).
+                         value={Math.abs(order_flow.obi_block_threshold ?? -0.3)}
+                         onChange={(e) => setNestedValue('order_flow.obi_block_threshold', -parseFloat(e.target.value))}
                          className="w-full accent-rose-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
                        />
                      </div>
@@ -941,15 +1060,15 @@ export const SystemSettingsPage: React.FC = () => {
                      
                      <div className="relative group">
                        <select 
-                         value={localConfig.quick_think_llm ?? ''}
-                         onChange={(e) => setNestedValue('quick_think_llm', e.target.value)}
+                         value={localConfig.fast_think_llm ?? ''}
+                         onChange={(e) => setNestedValue('fast_think_llm', e.target.value)}
                          className="w-full bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-lg p-3 outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/50 font-mono transition-all shadow-inner cursor-pointer appearance-none"
                        >
                          {Array.from(new Set([
                            ...(localConfig.llm_provider === 'anthropic' ? ['claude-3-5-haiku-latest', 'claude-3-haiku-20240307'] : []),
                            ...(localConfig.llm_provider === 'google' ? ['gemini-1.5-flash', 'gemini-1.5-flash-8b'] : []),
                            ...(localConfig.llm_provider === 'openai' ? ['gpt-4o-mini', 'gpt-3.5-turbo'] : []),
-                           localConfig.quick_think_llm
+                           localConfig.fast_think_llm
                          ].filter(Boolean))).map(val => (
                            <option key={val as string} value={val as string}>{MODEL_LABELS[val as string] || val}</option>
                          ))}
@@ -1016,6 +1135,72 @@ export const SystemSettingsPage: React.FC = () => {
                    )}
                  </div>
 
+               </CardContent>
+             </Card>
+
+             {/* Token Compression */}
+             <Card className="bg-slate-950/40 border-slate-800 overflow-hidden">
+               <CardHeader className="py-4 border-b border-slate-800/50 bg-slate-900/30">
+                 <CardTitle className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                   <Minimize2 size={16} /> Token Compression
+                 </CardTitle>
+               </CardHeader>
+               <CardContent className="p-0">
+                 <div className="divide-y divide-slate-800/50">
+
+                   {/* Compress Tool Output (RTK) */}
+                   <div className="p-6 flex flex-col sm:flex-row sm:items-start justify-between gap-6 hover:bg-slate-800/20 transition-colors">
+                     <div className="flex gap-4">
+                       <div className="mt-1 w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center shrink-0">
+                         <Minimize2 className="text-cyan-400" size={16} />
+                       </div>
+                       <div>
+                         <h4 className="font-bold text-slate-200 text-sm flex items-center gap-2">
+                           Compress Tool Output
+                           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">RTK</span>
+                         </h4>
+                         <p className="text-xs text-slate-500 mt-1 leading-relaxed max-w-xl">
+                           Compresses large tool results (news articles, financial statements, indicator dumps) before they enter agent context —
+                           same idea as compressing git/grep/ls/tree/log output in a coding agent. Typically cuts <strong className="text-slate-300">60–90% of input tokens</strong> on
+                           verbose tool calls. Applies to every analyst tool node.
+                         </p>
+                       </div>
+                     </div>
+                     <div className="sm:mt-2">
+                       <Toggle
+                         enabled={!!localConfig.compress_tool_output}
+                         onChange={(v) => setNestedValue('compress_tool_output', v)}
+                       />
+                     </div>
+                   </div>
+
+                   {/* Compress LLM Output (Caveman) */}
+                   <div className="p-6 flex flex-col sm:flex-row sm:items-start justify-between gap-6 hover:bg-slate-800/20 transition-colors">
+                     <div className="flex gap-4">
+                       <div className="mt-1 w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
+                         <Minimize2 className="text-amber-400" size={16} />
+                       </div>
+                       <div>
+                         <h4 className="font-bold text-slate-200 text-sm flex items-center gap-2">
+                           Compress LLM Output
+                           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">Caveman</span>
+                         </h4>
+                         <p className="text-xs text-slate-500 mt-1 leading-relaxed max-w-xl">
+                           Appends a terse-style directive to every analyst/researcher/risk-debator system prompt — short bullet points instead of prose,
+                           no restated questions or padding. Typically cuts <strong className="text-slate-300">~65% of output tokens (up to 87%)</strong>. Anti-hallucination,
+                           self-challenge, and confidence-scoring rules still apply — this only trims the prose wrapped around them.
+                         </p>
+                       </div>
+                     </div>
+                     <div className="sm:mt-2">
+                       <Toggle
+                         enabled={!!localConfig.compress_llm_output}
+                         onChange={(v) => setNestedValue('compress_llm_output', v)}
+                       />
+                     </div>
+                   </div>
+
+                 </div>
                </CardContent>
              </Card>
 
@@ -1267,6 +1452,53 @@ export const SystemSettingsPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Live-Trading Confirmation Gate */}
+      {showLiveConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-rose-500/40 rounded-2xl shadow-[0_0_40px_rgba(244,63,94,0.15)] overflow-hidden">
+            <div className="p-6 flex flex-col gap-4">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-xl bg-rose-500/10 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="text-rose-400" size={26} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-100">Enable Live Trading?</h3>
+                  <p className="text-sm text-slate-400 mt-1 leading-relaxed">
+                    You've entered real API credentials for{' '}
+                    <span className="text-rose-400 font-bold">{(localConfig.execution?.exchange ?? localConfig.execution?.broker ?? '').toUpperCase()}</span>.
+                    Saving now switches this account from Paper Trading to{' '}
+                    <span className="text-rose-400 font-bold">LIVE trading with real funds</span> —
+                    AI agents will be able to place actual orders on your account.
+                  </p>
+                </div>
+              </div>
+              <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-xs text-slate-500 leading-relaxed">
+                This happens because the exchange, API key, and secret are all filled in — the
+                account is live whenever real credentials are present, independent of the
+                Paper Trading / Live Trading buttons above. Remove the API key/secret above
+                (or switch to Paper Trading broker) if that's not what you want.
+              </div>
+              <div className="flex items-center justify-end gap-3 mt-2">
+                <button
+                  onClick={() => setShowLiveConfirm(false)}
+                  className="px-4 py-2 rounded-lg text-sm font-bold text-slate-300 hover:bg-slate-800 transition-colors flex items-center gap-2"
+                >
+                  <X size={14} /> Cancel
+                </button>
+                <button
+                  onClick={performSave}
+                  disabled={saving}
+                  className="px-4 py-2 rounded-lg text-sm font-bold bg-rose-600 hover:bg-rose-500 text-white transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  {saving ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
+                  {saving ? 'Enabling…' : 'Yes, Enable Live Trading'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

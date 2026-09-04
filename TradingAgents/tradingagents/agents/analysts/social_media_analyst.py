@@ -2,6 +2,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 import time
 import json
 from tradingagents.agents.utils.agent_utils import get_news
+from tradingagents.agents.utils.prompt_blocks import terse_suffix
 from tradingagents.dataflows.config import get_config
 
 
@@ -17,7 +18,13 @@ def create_social_media_analyst(llm):
 
         system_message = (
             "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news. Use the get_news(query, start_date, end_date) tool to search for company-specific news and social media discussions. Try to look at all sources possible from social media to sentiment to news. Do not simply state the trends are mixed, provide detailed and finegrained analysis and insights that may help traders make decisions."
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read.""",
+            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            # NOTE: this used to end in a trailing comma inside the outer
+            # parens, silently making system_message a 1-element tuple
+            # instead of a str — .partial(system_message=...) would have
+            # embedded "('...text...',)" verbatim into the prompt. Fixed
+            # while adding terse_suffix() here.
+            + terse_suffix()
         )
 
         prompt = ChatPromptTemplate.from_messages(

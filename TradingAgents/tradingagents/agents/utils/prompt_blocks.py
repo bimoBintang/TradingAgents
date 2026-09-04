@@ -84,3 +84,51 @@ STRICT_SYSTEM_PREAMBLE_NO_TOOLS = (
     "Your output directly impacts real trading decisions and capital allocation. "
     "Treat every analysis as if millions of dollars depend on it — because they do."
 )
+
+# ── Block 6: Terse Output ("Caveman" mode) ─────────────────────────────
+#
+# Settings > AI Language Models > "Compress LLM output (Caveman)". A
+# terse-style system directive trades prose for short bullet points —
+# reported to cut output tokens by roughly 65% (up to ~87% on verbose
+# responses). Appended (never replaces) the strict preamble above via
+# get_strict_system_preamble()/get_strict_system_preamble_no_tools(), so
+# ANTI_HALLUCINATION/SELF_CHALLENGE/CONFIDENCE_SCORING etc. still apply —
+# this only changes how much prose wraps around them.
+
+TERSE_OUTPUT = """
+## OUTPUT LENGTH — TERSE MODE ACTIVE
+Be extremely concise. Short bullet points, not prose. No restating the question, no disclaimers, no "in summary" recaps, no padding sentences that add zero information. State only the concrete facts, numbers, and conclusion a trader needs. Skip preambles about what you're about to do — just do it.
+"""
+
+
+def is_terse_enabled() -> bool:
+    """Whether Settings > AI Language Models > Compress LLM Output is on
+    for the currently active graph (tradingagents.dataflows.config's
+    module-level config, set once per TradingAgentsGraph via set_config()
+    — the same mechanism market_analyst.py etc. already use for tool
+    config, so this needs no new plumbing through every call site)."""
+    from tradingagents.dataflows.config import get_config
+    return bool(get_config().get("compress_llm_output", False))
+
+
+def terse_suffix() -> str:
+    """TERSE_OUTPUT when Compress LLM Output is on, else "" — append this
+    to the end of a hand-built system prompt (bare string concatenation,
+    works the same whether the prompt is an f-string or a plain str):
+        prompt = f\"\"\"...\"\"\" + terse_suffix()
+    Deliberately NOT applied to trader.py or risk_manager.py — both
+    produce structured output (<TRADE_DECISION> JSON, risk assessments)
+    that real order execution parses; terseness risks dropping required
+    fields, which is a correctness/safety issue, not just a style one.
+    """
+    return TERSE_OUTPUT if is_terse_enabled() else ""
+
+
+def get_strict_system_preamble() -> str:
+    """STRICT_SYSTEM_PREAMBLE, with TERSE_OUTPUT appended when enabled."""
+    return STRICT_SYSTEM_PREAMBLE + ("\n" + TERSE_OUTPUT if is_terse_enabled() else "")
+
+
+def get_strict_system_preamble_no_tools() -> str:
+    """STRICT_SYSTEM_PREAMBLE_NO_TOOLS, with TERSE_OUTPUT appended when enabled."""
+    return STRICT_SYSTEM_PREAMBLE_NO_TOOLS + ("\n" + TERSE_OUTPUT if is_terse_enabled() else "")

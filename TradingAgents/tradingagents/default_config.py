@@ -32,6 +32,21 @@ DEFAULT_CONFIG = {
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
+    # ── Token Compression (Settings > AI Language Models) ─────────────
+    # "Compress tool output (RTK)": wraps every tool on every ToolNode
+    # (get_stock_data, get_news, get_indicators, financial statements,
+    # ...) so large/repetitive text results get truncated+deduped before
+    # they enter agent context — same idea as compressing git/grep/ls/
+    # tree/log output in a coding agent, applied to this app's own
+    # data-fetching tools. See tradingagents/agents/utils/tool_compression.py.
+    "compress_tool_output": False,
+    # "Compress LLM output (Caveman)": appends a terse-style directive to
+    # the shared STRICT_SYSTEM_PREAMBLE used by market/quant/fundamentals/
+    # news analysts, the synthesizer, bull/bear researchers, the
+    # aggressive/conservative debators, and the risk manager — cutting
+    # output tokens by favoring short bullet points over prose. See
+    # tradingagents/agents/utils/prompt_blocks.py's get_strict_system_preamble().
+    "compress_llm_output": False,
     # Debate and discussion settings
     "max_debate_rounds": 2,
     "max_risk_discuss_rounds": 2,
@@ -85,6 +100,14 @@ DEFAULT_CONFIG = {
         "max_position_pct": 0.10,            # Max 10% of portfolio per position
         "max_total_positions": 10,            # Max concurrent open positions
         "state_file": None,                  # Path to persist portfolio (JSON), None = in-memory only
+        # ── Fractional Kelly position sizing ──────────────────────────
+        # Caps allocation by the edge actually demonstrated in this
+        # portfolio's own closed trades. Off by default and a no-op until
+        # MIN_TRADES_FOR_EDGE (30) real trades exist — before that there
+        # is nothing to measure. It can only SHRINK an agent's requested
+        # size, never grow it. See tradingagents/execution/position_sizing.py.
+        "kelly_enabled": False,
+        "kelly_multiplier": 0.25,            # 0.25 = quarter-Kelly, 0.5 = half-Kelly
     },
     # ── MCP Server Configuration ──────────────────────────────────────
     # Which account mcp_server/server.py acts as when Claude Desktop/Code
@@ -104,7 +127,7 @@ DEFAULT_CONFIG = {
         "mode": "paper",                     # disabled | paper | live
         "broker": "paper",                   # paper | ccxt | alpaca
         # Broker-specific settings
-        "exchange": None,                    # None until user selects: binance, bybit, okx, etc.
+        "exchange": None,                    # None until user selects: binance, bybit, okx, bitget, etc.
         "api_key": "",                       # Set by user via Dashboard
         "api_secret": "",                    # Set by user via Dashboard
         "password": "",                      # Some exchanges require passphrase (e.g., OKX)
@@ -119,9 +142,15 @@ DEFAULT_CONFIG = {
         "min_confidence": 0.5,               # Minimum confidence to execute
         "max_daily_loss_pct": 0.05,          # Kill switch: stop if daily loss > 5%
         "cooldown_seconds": 300,             # Min seconds between trades on same ticker
+        "balance_sync_interval_seconds": 30, # How often api/services/balance_sync.py polls the real broker balance
         "commission_pct": 0.001,             # Simulated commission for paper broker (0.1%)
         "slippage_pct": 0.0005,              # Simulated slippage for paper broker (0.05%)
         "require_confirmation": True,        # Manual confirm before live trades
+        # How long a queued order stays approvable. A trade thesis decays:
+        # approving a signal generated hours ago executes on a market that
+        # no longer resembles the one that was analyzed. Expired orders are
+        # never executable — they must be re-analyzed instead.
+        "pending_order_ttl_seconds": 900,    # 15 minutes
         "atr_timeframe": "1h",                   # OHLCV timeframe for ATR calculation via CCXT
         # Retry settings for transient network errors
         "retry_max_attempts": 3,             # Max retry attempts (0 = no retries)
@@ -146,6 +175,11 @@ DEFAULT_CONFIG = {
     "storage": {
         "enabled": True,                             # Enable SQLite persistence
         "db_path": "~/.tradingagents/trading.db",    # SQLite database file
+        # Scopes durable risk state (kill switch, loss streak, PnL window)
+        # inside the shared database file. The multi-tenant API overrides
+        # this per user in api/user_context.py — leaving every account on
+        # "default" would give the whole platform ONE shared kill switch.
+        "account_id": "default",
         "snapshot_interval_minutes": 30,             # Deferred to Phase 6 scheduler
         "max_memory_items_per_agent": 500,           # Max BM25 pairs per agent
         "max_reflections_loaded": 20,                # Per ticker per session

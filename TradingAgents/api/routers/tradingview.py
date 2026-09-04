@@ -184,12 +184,15 @@ async def inject_pinescript(
     try:
         # 2. Inject & Verify via CDP / Fallback Client
         res = tv_write_pinescript(code=body.code, script_name=body.script_name)
+        # Defaults here are deliberately conservative (not "success"/True) —
+        # tv_write_pinescript() always populates these itself, but a
+        # response missing them shouldn't be read as an unearned success.
         return PineScriptResponse(
-            status=res.get("status", "success"),
+            status=res.get("status", "unknown"),
             script_name=body.script_name,
-            compiled=res.get("compiled", True),
+            compiled=res.get("compiled", False),
             syntax_valid=True,
-            message=res.get("message", "Script submitted successfully."),
+            message=res.get("message", "No confirmation received from TradingView."),
         )
     except Exception as exc:
         logger.error("[API TradingView] Error injecting Pine Script by user %d: %s", user.id, exc)

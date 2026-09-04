@@ -284,6 +284,82 @@ class CcxtBroker(BaseBroker):
                 broker_name=self.name,
             )
 
+    def place_stop_loss_order(
+        self,
+        ticker: str,
+        side: OrderSide,
+        quantity: float,
+        stop_price: float,
+        position_side: Optional[str] = None,
+    ) -> OrderResult:
+        """Rest a protective stop-loss order at the exchange.
+
+        Sent as reduce-only so it can only ever CLOSE the position it
+        protects. Without that flag, a stop that fires when the position is
+        already gone (closed manually, liquidated, or exited by another
+        path) would open a brand new position in the opposite direction —
+        turning a safety mechanism into an unintended trade.
+
+        Not every venue accepts the same trigger parameter name, so both
+        `stopPrice` and `triggerPrice` are sent; ccxt and the exchanges
+        ignore whichever they don't recognize.
+        """
+        symbol = self._normalize_ticker(ticker)
+        ccxt_side = side.value.lower()
+
+        params: Dict[str, Any] = {
+            "stopPrice": stop_price,
+            "triggerPrice": stop_price,
+            "reduceOnly": True,
+        }
+        if self.market_type == "future" and position_side:
+            params["positionSide"] = position_side
+
+        try:
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type=_ORDER_TYPE_MAP.get(OrderType.STOP, "stop"),
+                side=ccxt_side,
+                amount=quantity,
+                price=None,
+                params=params,
+            )
+            logger.info(
+                "[CcxtBroker] Protective stop resting at exchange: %s %s %s @ trigger %.8f",
+                ccxt_side, quantity, symbol, stop_price,
+            )
+            return OrderResult(
+                order_id=str(order["id"]),
+                ticker=symbol,
+                side=side,
+                order_type=OrderType.STOP,
+                status=OrderStatus.SUBMITTED,
+                requested_quantity=quantity,
+                requested_price=stop_price,
+                broker_name=self.name,
+                raw_response=order,
+            )
+        except Exception as e:
+            # Returned rather than raised: the caller must be able to tell
+            # "the venue rejected this stop" apart from "this broker has no
+            # stop support at all", and must keep the resulting position
+            # flagged as unprotected either way.
+            logger.error(
+                "[CcxtBroker] FAILED to place protective stop for %s @ %.8f: %s",
+                symbol, stop_price, e,
+            )
+            return OrderResult(
+                order_id=f"failed_{uuid.uuid4().hex[:8]}",
+                ticker=symbol,
+                side=side,
+                order_type=OrderType.STOP,
+                status=OrderStatus.REJECTED,
+                requested_quantity=quantity,
+                requested_price=stop_price,
+                error_message=f"Stop-loss placement failed: {e}",
+                broker_name=self.name,
+            )
+
     def cancel_order(self, order_id: str, symbol: Optional[str] = None) -> bool:
         """Cancel a pending order on the exchange.
 
@@ -375,29 +451,49 @@ class CcxtBroker(BaseBroker):
             )
 
     def get_balance(self) -> Dict[str, float]:
-        """Fetch account balance from the exchange (with retry)."""
+        """Fetch account balance from the exchange (with retry).
+
+        Swallows all errors and returns a zeroed fallback dict — this
+        method is meant for UI display, where a transient fetch failure
+        shouldn't crash the dashboard. It must NEVER be used to check
+        whether credentials/connectivity are actually valid; use
+        `fetch_balance_strict()` (via `health_check()`) for that.
+        """
         try:
-            balance = with_retry(
-                lambda: self.exchange.fetch_balance(),
-                config=self._retry_config,
-                operation_name="fetch_balance",
-            )
-            free = balance.get("free", {})
-            total = balance.get("total", {})
-
-            # Get total in quote currency
-            quote_free = free.get(self.default_quote, 0.0) or 0.0
-            quote_total = total.get(self.default_quote, 0.0) or 0.0
-
-            return {
-                "cash": quote_free,
-                "total_equity": quote_total,
-                "buying_power": quote_free,
-                "balances": {k: v for k, v in total.items() if v and v > 0},
-            }
+            return self._fetch_balance_raw()
         except Exception as e:
             logger.error("Balance fetch failed: %s", e)
             return {"cash": 0.0, "total_equity": 0.0, "buying_power": 0.0}
+
+    def fetch_balance_strict(self) -> Dict[str, float]:
+        """Fetch balance WITHOUT the safety net — real errors (bad api_key/
+        api_secret, missing passphrase, network failure) propagate as
+        exceptions. Used by health_check() / broker connectivity tests.
+        """
+        return self._fetch_balance_raw()
+
+    def _fetch_balance_raw(self) -> Dict[str, float]:
+        """Shared unguarded balance fetch used by get_balance() and
+        fetch_balance_strict() — the only difference between them is
+        whether the caller catches the exception."""
+        balance = with_retry(
+            lambda: self.exchange.fetch_balance(),
+            config=self._retry_config,
+            operation_name="fetch_balance",
+        )
+        free = balance.get("free", {})
+        total = balance.get("total", {})
+
+        # Get total in quote currency
+        quote_free = free.get(self.default_quote, 0.0) or 0.0
+        quote_total = total.get(self.default_quote, 0.0) or 0.0
+
+        return {
+            "cash": quote_free,
+            "total_equity": quote_total,
+            "buying_power": quote_free,
+            "balances": {k: v for k, v in total.items() if v and v > 0},
+        }
 
     def get_positions(self) -> List[PositionInfo]:
         """Get open positions (derived from non-zero balances).

@@ -340,19 +340,34 @@ class AlpacaBroker(BaseBroker):
             )
 
     def get_balance(self) -> Dict[str, float]:
-        """Get account balance from Alpaca."""
+        """Get account balance from Alpaca.
+
+        Swallows all errors and returns a zeroed fallback dict — meant for
+        UI display resilience. Must NOT be used to verify credentials; use
+        `fetch_balance_strict()` (via `health_check()`) for that.
+        """
         try:
-            account = self.client.get_account()
-            return {
-                "cash": float(account.cash),
-                "total_equity": float(account.equity),
-                "buying_power": float(account.buying_power),
-                "portfolio_value": float(account.portfolio_value),
-                "pnl": float(account.equity) - float(account.last_equity),
-            }
+            return self._fetch_balance_raw()
         except Exception as e:
             logger.error("Balance fetch failed: %s", e)
             return {"cash": 0.0, "total_equity": 0.0, "buying_power": 0.0}
+
+    def fetch_balance_strict(self) -> Dict[str, float]:
+        """Fetch balance WITHOUT the safety net — invalid API key/secret or
+        network failures propagate as exceptions. Used by health_check().
+        """
+        return self._fetch_balance_raw()
+
+    def _fetch_balance_raw(self) -> Dict[str, float]:
+        """Shared unguarded balance fetch for get_balance() and fetch_balance_strict()."""
+        account = self.client.get_account()
+        return {
+            "cash": float(account.cash),
+            "total_equity": float(account.equity),
+            "buying_power": float(account.buying_power),
+            "portfolio_value": float(account.portfolio_value),
+            "pnl": float(account.equity) - float(account.last_equity),
+        }
 
     def get_positions(self) -> List[PositionInfo]:
         """Get all open positions from Alpaca."""

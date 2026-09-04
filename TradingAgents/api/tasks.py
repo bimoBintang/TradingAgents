@@ -11,6 +11,62 @@ from datetime import datetime, timezone
 logger = logging.getLogger("api.tasks")
 
 
+def _persist_pending_orders(db, user_id: int, task_id: str, graph, user_config: dict) -> int:
+    """Write orders the engine queued for approval into the database.
+
+    Scoped to `user_id` and given an explicit expiry, so the approval
+    endpoint can find them after this graph is gone and can refuse ones
+    that have gone stale.
+    """
+    from datetime import timedelta
+    from api.models import PendingOrder
+
+    engine = getattr(graph, "execution_engine", None)
+    if engine is None:
+        return 0
+
+    ttl = int(user_config.get("execution", {}).get("pending_order_ttl_seconds", 900))
+    now = datetime.now(timezone.utc)
+    written = 0
+
+    for pending in engine.get_pending_orders():
+        key = pending.get("idempotency_key")
+        if not key:
+            continue
+        # Idempotency keys are unique; never write the same order twice.
+        if db.query(PendingOrder).filter(PendingOrder.idempotency_key == key).first():
+            continue
+
+        db.add(PendingOrder(
+            user_id=user_id,
+            task_id=task_id,
+            ticker=pending.get("ticker", ""),
+            action=str(pending.get("action", "")),
+            quantity=float(pending.get("quantity", 0) or 0),
+            price=float(pending.get("price", 0) or 0),
+            value=float(pending.get("value", 0) or 0),
+            confidence=float(pending.get("confidence", 0) or 0),
+            stop_loss_pct=pending.get("stop_loss_pct"),
+            take_profit_pct=pending.get("take_profit_pct"),
+            order_type=str(pending.get("order_type", "MARKET")),
+            time_horizon=pending.get("time_horizon"),
+            risk_score=pending.get("risk_reward_ratio"),
+            reasoning=(pending.get("reasoning") or "")[:1000],
+            key_factors=json.dumps(pending.get("key_factors") or []),
+            decision_json=pending.get("decision_json") or "",
+            idempotency_key=key,
+            status="PENDING",
+            created_at=now,
+            expires_at=now + timedelta(seconds=ttl),
+        ))
+        written += 1
+
+    if written:
+        db.commit()
+        logger.info("Persisted %d pending order(s) for user %d", written, user_id)
+    return written
+
+
 def _do_analysis(task_id: str, user_id: int, ticker: str, trade_date: str, auto_execute: bool):
     """Core analysis logic — shared by Celery task and thread fallback.
 
@@ -78,12 +134,56 @@ def _do_analysis(task_id: str, user_id: int, ticker: str, trade_date: str, auto_
                 task_row.updated_at = datetime.now(timezone.utc)
                 db.commit()
 
+            # Persist any order the engine queued for manual approval.
+            #
+            # The engine holds pending orders in memory, but this analysis
+            # runs on a per-user TradingAgentsGraph that is discarded the
+            # moment this function returns — so without this write the
+            # order simply vanished, and since require_confirmation
+            # defaults to True that meant NO trade could ever be executed.
+            # Persisting here also scopes the order to its user, which the
+            # in-memory queue on a shared singleton never did.
+            try:
+                _persist_pending_orders(db, user_id, task_id, graph, user_config)
+            except Exception as pend_e:
+                logger.error("Failed to persist pending orders for user %d: %s", user_id, pend_e)
+
+            # Record this decision alongside what each baseline would have
+            # called at the same instant and price — the only lookahead-free
+            # way to find out whether this agent stack is worth its cost.
+            # See api/services/forward_benchmark.py. Never allowed to break
+            # the analysis: measurement must not take down the thing it measures.
+            try:
+                from api.routers.analysis import _parse_decision
+                from api.services.forward_benchmark import record_decision_set
+
+                parsed = _parse_decision(decision)
+                if parsed is not None:
+                    record_decision_set(
+                        db, user_id, ticker,
+                        agent_action=parsed.action,
+                        agent_confidence=parsed.confidence_score,
+                    )
+            except Exception as bench_e:
+                logger.error("Forward benchmark record failed for user %d: %s", user_id, bench_e)
+
             # Sync graph state to user's portfolio
             try:
                 from api.db_sync import save_graph_to_db
                 save_graph_to_db(graph, user_id=user_id)
             except Exception as sync_e:
                 logger.error("Failed to sync to DB for user %d: %s", user_id, sync_e)
+
+            # If this was a live (non-paper) fill, pull the REAL post-trade
+            # balance immediately rather than waiting up to
+            # balance_sync_interval_seconds for the next scheduled tick —
+            # see api/services/balance_sync.py.
+            if order_result is not None:
+                try:
+                    from api.services.balance_sync import sync_user_balance
+                    sync_user_balance(user_id, db=db)
+                except Exception as sync_e:
+                    logger.error("Post-fill balance sync failed for user %d: %s", user_id, sync_e)
 
         except Exception as e:
             logger.error("Analysis task %s failed: %s", task_id, e)

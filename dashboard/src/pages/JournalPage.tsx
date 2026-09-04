@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { PnLHeatmap } from '../components/dashboard/PnLHeatmap';
+import { ProfitCalendar } from '../components/dashboard/ProfitCalendar';
 import { EquityCurveChart } from '../components/dashboard/EquityCurveChart';
 import { useTrades, usePortfolio, usePerformance, useJournalNote, useJournalHistory } from '../hooks/useApi';
 import { api } from '../services/api';
@@ -120,6 +121,11 @@ export const JournalPage: React.FC = () => {
       <div className="grid grid-cols-12 gap-6">
         <EquityCurveChart className="col-span-12 lg:col-span-8 min-h-[320px]" />
         <PnLHeatmap className="col-span-12 lg:col-span-4 min-h-[320px]" />
+      </div>
+
+      {/* Monthly Profit Calendar */}
+      <div className="grid grid-cols-12 gap-6">
+        <ProfitCalendar className="col-span-12" />
       </div>
 
       {/* Export Row */}

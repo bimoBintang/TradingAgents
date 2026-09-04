@@ -141,10 +141,48 @@ class AnalyzeResponse(BaseModel):
     message: str = "Analysis started in background."
 
 
+class DecisionSummary(BaseModel):
+    """Normalized shape of the Trader agent's decision — the single place
+    this gets parsed, so every API consumer (dashboard, MCP, future
+    clients) sees the same structure regardless of which of the two forms
+    tradingagents/graph/signal_processing.py::process_signal() actually
+    produced internally:
+      1. Structured: a JSON string of a TradeDecision Pydantic model
+         (tradingagents/execution/order_models.py).
+      2. Fallback: a bare "BUY" / "SELL" / "HOLD" string when structured
+         extraction failed.
+    Previously each frontend consumer (AgentInsights.tsx, AnalysisPage.tsx)
+    guessed which shape it received — each guessed differently, and both
+    guessed wrong: `decision` was ALWAYS a string (never a parsed object),
+    so AgentInsights' `typeof decision === 'object'` check was never true
+    (action always fell back to "PENDING", confidence always 0%), while
+    AnalysisPage rendered the raw JSON text verbatim as the decision value
+    and its `decision === 'BUY'`/`'SELL'` color-coding never matched.
+    See api/routers/analysis.py::_parse_decision().
+    """
+    action: str                                  # BUY | SELL | HOLD | STRONG_BUY | STRONG_SELL
+    is_structured: bool                           # False when structured extraction fell back to a bare action string
+    raw_text: str                                 # The original text, always available for debugging/display
+    ticker: Optional[str] = None
+    confidence_score: Optional[float] = None
+    quantity_pct: Optional[float] = None
+    order_type: Optional[str] = None
+    limit_price: Optional[float] = None
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+    reasoning: Optional[str] = None
+    key_factors: Optional[List[str]] = None
+    risk_reward_ratio: Optional[float] = None
+    time_horizon: Optional[str] = None
+    leverage: Optional[int] = None
+    position_side: Optional[str] = None
+    margin_type: Optional[str] = None
+
+
 class AnalysisResultResponse(BaseModel):
     task_id: str
     status: str  # "running" | "completed" | "failed"
-    decision: Optional[Any] = None
+    decision: Optional[DecisionSummary] = None
     order_result: Optional[Any] = None
     reports: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -497,3 +535,23 @@ class ApproveRejectResponse(BaseModel):
     status: str                             # APPROVED, REJECTED, FAILED, NOT_FOUND
     message: str
     order_id: Optional[str] = None
+
+
+class BrokerTestRequest(BaseModel):
+    """Credentials to test-connect a broker/exchange without saving them."""
+    broker: str = "ccxt"                    # paper | ccxt | alpaca
+    exchange: Optional[str] = None          # binance, bybit, okx, bitget, ... (ccxt only)
+    api_key: str = ""
+    api_secret: str = ""
+    password: str = ""                      # passphrase (OKX/KuCoin/Bitget)
+    sandbox: bool = True
+    market_type: str = "spot"               # spot | future
+    quote_currency: str = "USDT"
+
+
+class BrokerTestResponse(BaseModel):
+    """Result of a broker connectivity test."""
+    success: bool
+    broker_name: str
+    message: str
+    balance: Optional[Dict[str, float]] = None

@@ -1,6 +1,8 @@
 import time
 import json
 
+from tradingagents.agents.utils.prompt_blocks import terse_suffix
+
 
 def create_research_manager(llm, memory):
     def research_manager_node(state) -> dict:
@@ -43,7 +45,7 @@ Here is the Analyst Synthesizer Briefing:
 
 Here is the debate:
 Debate History:
-{history}"""
+{history}""" + terse_suffix()
         response = llm.invoke(prompt)
 
         new_investment_debate_state = {

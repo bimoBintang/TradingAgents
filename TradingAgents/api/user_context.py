@@ -64,6 +64,14 @@ def get_user_config(db: Session, user_id: int) -> dict:
     user_overrides = json.loads(uc.config_json) if uc.config_json else {}
     merged = deep_merge(DEFAULT_CONFIG, user_overrides)
 
+    # Scope durable risk state to this user. storage.db_path is a single
+    # shared file, so without a per-user account_id every tenant would
+    # read and write the SAME kill switch row — one user's loss limit
+    # would halt everyone, and one user's fresh state would clear
+    # another's halt. Forced here rather than trusted from config_json so
+    # a user cannot set it to another account's id.
+    merged.setdefault("storage", {})["account_id"] = f"user_{user_id}"
+
     # Inject decrypted credentials into the execution block
     exec_block = merged.setdefault("execution", {})
     if uc.encrypted_api_key:

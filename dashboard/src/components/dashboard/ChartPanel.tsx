@@ -8,7 +8,7 @@ import {
   HistogramSeries,
   LineStyle,
 } from 'lightweight-charts';
-import type { ISeriesApi, IPriceLine, LineWidth } from 'lightweight-charts';
+import type { ISeriesApi, IPriceLine, LineWidth, Time } from 'lightweight-charts';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import { Select } from '../ui/Select';
 import {
@@ -16,6 +16,7 @@ import {
   useFVG, useIFVG, useLiquiditySweeps,
   useOrderFlow, useAnchoredVWAP, useVolumeProfile,
 } from '../../hooks/useApi';
+import { useOhlcvWS } from '../../hooks/useWebSocket';
 import { usePatternOverlay } from '../../hooks/usePatternOverlay';
 import type { PatternResponse } from '../../types/patterns';
 import { Loader2, Sparkles, X } from 'lucide-react';
@@ -30,9 +31,21 @@ const getTickerName = (ticker: string) => {
   return 'NVIDIA Corp.';
 };
 
-// Normalize date strings for Lightweight Charts:
-// Daily chart expects 'yyyy-mm-dd', strip any time/timezone suffix.
-const normalizeTime = (d: string) => d.split('T')[0];
+// Normalize date strings for Lightweight Charts.
+//
+// Daily candles: 'yyyy-mm-dd' (strip any time/timezone suffix).
+// Intraday candles (1H/30M/15M/5M) MUST keep time-of-day — the backend
+// already sends full 'yyyy-mm-ddTHH:MM:SS' for these (api/routers/
+// market_data.py), but this used to unconditionally truncate to the date
+// portion regardless of timeframe, which collapsed every candle in a day
+// onto one point (the dedup pass below then dropped all but the first).
+// Lightweight Charts needs a UNIX timestamp (seconds) to place sub-daily
+// points correctly, so intraday times are converted rather than truncated.
+const normalizeTime = (d: string, intraday: boolean): Time => {
+  if (!intraday) return d.split('T')[0] as Time;
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(d) ? d : `${d}Z`; // assume UTC if no offset given
+  return Math.floor(new Date(iso).getTime() / 1000) as Time;
+};
 
 // ── SMA / BB / RSI calculation from OHLCV candles ────────────────────
 
@@ -133,9 +146,16 @@ interface ChartPanelProps {
   /** Fires whenever ticker/timeframe/activeIndicator changes, so a
    * parent can report the combined state over /ws/chart-control. */
   onStateChange?: (state: { ticker: string; timeframe: string; activeIndicator: string }) => void;
+  /** ccxt exchange id (e.g. 'bitget') when the user has a live broker
+   * configured with a real exchange selected — set by OverviewPage from
+   * useConfig(). When present, candles stream live from that exchange
+   * via /ws/ohlcv (matching what the bot actually trades at) instead of
+   * the yfinance REST poll. Omit/null to keep the existing yfinance-only
+   * behavior (paper trading, stocks, or no broker connected). */
+  liveExchange?: string | null;
 }
 
-export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticker, onStateChange }, ref) => {
+export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticker, onStateChange, liveExchange }, ref) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const seriesRef = useRef<Record<string, any>>({});
@@ -170,6 +190,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticke
 
   // Data hooks
   const { data: ohlcv, loading: ohlcvLoading } = useOHLCV(ticker, intervalMap[timeframe] ?? '1d');
+  // Live exchange feed — supersedes the yfinance candles above when
+  // available (see the ChartPanelProps.liveExchange doc comment).
+  const { candles: liveCandles, status: liveStatus } = useOhlcvWS(
+    ticker, intervalMap[timeframe] ?? '1d', !!liveExchange,
+  );
   const { data: fibData } = useFibonacci(ticker);
   const { data: fvgData } = useFVG(ticker);
   const { data: ifvgData } = useIFVG(ticker);
@@ -244,14 +269,19 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticke
     return () => { window.removeEventListener('resize', handleResize); chart.remove(); chartRef.current = null; };
   }, []);
   
-  // 2. Load OHLCV Data
+  // 2. Load OHLCV Data — prefers the live exchange feed (useOhlcvWS) over
+  // the yfinance REST poll (useOHLCV) whenever it's connected and has
+  // delivered at least one update; falls back to yfinance otherwise
+  // (paper trading, stocks, no broker, or the live feed hasn't pushed yet).
+  const sourceCandles = liveCandles && liveCandles.length > 0 ? liveCandles : ohlcv?.candles;
   useEffect(() => {
-    if (!chartRef.current || !seriesRef.current.candlestick || !ohlcv || ohlcv.candles.length === 0) return;
-    const candles = ohlcv.candles;
+    if (!chartRef.current || !seriesRef.current.candlestick || !sourceCandles || sourceCandles.length === 0) return;
+    const candles = sourceCandles;
+    const intraday = (intervalMap[timeframe] ?? '1d') !== '1d';
     // Normalize time and deduplicate (timezone edge can create duplicate days)
-    const seen = new Set<string>();
+    const seen = new Set<string | number>();
     const normalized = candles
-      .map((c: any) => ({ ...c, time: normalizeTime(c.time) }))
+      .map((c: any) => ({ ...c, time: normalizeTime(c.time, intraday) }))
       .filter((c: any) => {
         if (seen.has(c.time)) return false;
         seen.add(c.time);
@@ -271,7 +301,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticke
     seriesRef.current.rsiUpper.setData(normalized.map((c: any) => ({ time: c.time, value: 70 })));
     seriesRef.current.rsiLower.setData(normalized.map((c: any) => ({ time: c.time, value: 30 })));
     chartRef.current.timeScale().fitContent();
-  }, [ohlcv]);
+  }, [ohlcv, liveCandles, timeframe]);
 
   // 3. Fibonacci Price Lines
   useEffect(() => {
@@ -300,7 +330,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticke
     if (!shouldShow('fvg') || !fvgData?.fvgs) return;
     const unfilled = fvgData.fvgs.filter(f => !f.is_filled);
     // Sort by proximity to current price (use midpoint of gap)
-    const lastPrice = ohlcv?.candles?.length ? ohlcv.candles[ohlcv.candles.length - 1].close : 0;
+    const lastPrice = sourceCandles?.length ? sourceCandles[sourceCandles.length - 1].close : 0;
     const sorted = [...unfilled].sort((a, b) => {
       const midA = (a.top + a.bottom) / 2;
       const midB = (b.top + b.bottom) / 2;
@@ -366,7 +396,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticke
       return;
     }
     flowSeriesRef.current.setData(flowData.flow.map(f => ({
-      time: normalizeTime(f.date),
+      time: normalizeTime(f.date, false),
       value: Math.abs(f.delta),
       color: f.delta >= 0 ? 'rgba(16, 185, 129, 0.6)' : 'rgba(239, 68, 68, 0.6)',
     })));
@@ -382,7 +412,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticke
       return;
     }
     vwapSeriesRef.current.setData(vwapData.vwap_values.map(v => ({
-      time: normalizeTime(v.date), value: v.vwap,
+      time: normalizeTime(v.date, false), value: v.vwap,
     })));
   }, [vwapData, activeIndicator]);
 
@@ -530,6 +560,19 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({ ticke
             {ticker}
             <span className="text-slate-400 font-normal text-sm">{getTickerName(ticker)}</span>
             {ohlcvLoading && <Loader2 size={14} className="animate-spin text-slate-500" />}
+            {liveExchange && (
+              <span
+                className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                  liveStatus === 'connected'
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                }`}
+                title={`Live candles from ${liveExchange}`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${liveStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                {liveStatus === 'connected' ? liveExchange.toUpperCase() : 'Connecting…'}
+              </span>
+            )}
           </CardTitle>
           <div className="flex items-center gap-3">
              <Select options={INDICATOR_OPTIONS} value={activeIndicator} onChange={setActiveIndicator} className="w-48" />

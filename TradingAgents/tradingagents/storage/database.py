@@ -34,7 +34,7 @@ class Database:
         trades = db.query_trades(ticker="NVDA")
     """
 
-    CURRENT_SCHEMA_VERSION = 2
+    CURRENT_SCHEMA_VERSION = 3
 
     def __init__(self, db_path: str = "~/.tradingagents/trading.db"):
         """Initialize database connection.
@@ -83,6 +83,8 @@ class Database:
                 self._apply_v1(cur)
             if current_version < 2:
                 self._apply_v2(cur)
+            if current_version < 3:
+                self._apply_v3(cur)
 
             self._conn.commit()
 
@@ -201,6 +203,85 @@ class Database:
             "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)",
             (2, datetime.utcnow().isoformat()),
         )
+
+    def _apply_v3(self, cur: sqlite3.Cursor):
+        """Schema version 3: durable risk-control state.
+
+        RiskController previously held the kill switch, the consecutive-loss
+        counter and the rolling PnL window purely in memory. In the SaaS
+        deployment a fresh TradingAgentsGraph — and therefore a fresh
+        RiskController — is constructed for EVERY analysis run, so all of
+        that reset to zero before each new decision: a tripped kill switch
+        never blocked the next trade, and the drawdown that should have
+        tripped it was recomputed from an empty history every time.
+
+        `account_id` scoping is mandatory, not cosmetic: this database file
+        is shared by every user (storage.db_path is a single global path),
+        so an unkeyed row would give the whole platform one shared kill
+        switch — one user's loss limit halting everyone, or worse, one
+        user's fresh state clearing another's halt.
+        """
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS risk_state (
+                account_id TEXT PRIMARY KEY,
+                kill_switch INTEGER NOT NULL DEFAULT 0,
+                kill_switch_reason TEXT DEFAULT '',
+                kill_switch_activated_date TEXT,
+                consecutive_losses INTEGER NOT NULL DEFAULT 0,
+                last_loss_time TEXT,
+                pnl_window_json TEXT DEFAULT '[]',
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        cur.execute(
+            "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)",
+            (3, datetime.utcnow().isoformat()),
+        )
+
+    # ── Risk State ────────────────────────────────────────────────────
+
+    def load_risk_state(self, account_id: str) -> Optional[dict]:
+        """Load persisted risk state for an account, or None if absent."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM risk_state WHERE account_id = ?", (account_id,)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def save_risk_state(
+        self,
+        account_id: str,
+        kill_switch: bool,
+        kill_switch_reason: str,
+        kill_switch_activated_date: Optional[str],
+        consecutive_losses: int,
+        last_loss_time: Optional[str],
+        pnl_window_json: str,
+    ) -> None:
+        """Persist risk state for an account (upsert)."""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO risk_state (
+                    account_id, kill_switch, kill_switch_reason,
+                    kill_switch_activated_date, consecutive_losses,
+                    last_loss_time, pnl_window_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    account_id,
+                    1 if kill_switch else 0,
+                    kill_switch_reason or "",
+                    kill_switch_activated_date,
+                    consecutive_losses,
+                    last_loss_time,
+                    pnl_window_json,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+            self._conn.commit()
 
     # ── Trades ────────────────────────────────────────────────────────
 

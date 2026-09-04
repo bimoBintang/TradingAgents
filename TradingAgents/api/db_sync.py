@@ -13,9 +13,10 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from api.database import SessionLocal
-from api.models import PortfolioState, Position, Trade
+from api.models import EquityCurvePoint, PortfolioState, Position, Trade
 
 logger = logging.getLogger("api.db_sync")
 
@@ -91,8 +92,20 @@ def load_graph_from_db(graph, user_id: Optional[int] = None):
             len(positions), len(db_trades), user_id,
         )
 
-        # Update peak_equity so max_drawdown_pct doesn't go negative
-        graph.portfolio_manager.peak_equity = graph.portfolio_manager.total_equity
+        # Restore the REAL historical peak from equity_curve_points, not
+        # today's equity — this used to unconditionally do
+        # `peak_equity = total_equity`, which silently forgets any real
+        # drawdown that happened before every single restart (a
+        # long-running live bot could be sitting at -30% off its true
+        # peak and this would report 0% right after a reboot). Falls
+        # back to current equity only when there's no history yet.
+        current_equity = graph.portfolio_manager.total_equity
+        historical_max = None
+        if user_id is not None:
+            historical_max = db.query(func.max(EquityCurvePoint.equity)).filter(
+                EquityCurvePoint.user_id == user_id
+            ).scalar()
+        graph.portfolio_manager.peak_equity = max(historical_max or current_equity, current_equity)
 
 
 def save_graph_to_db(graph, user_id: Optional[int] = None):
@@ -120,6 +133,14 @@ def save_graph_to_db(graph, user_id: Optional[int] = None):
         ps_model.win_rate = ps.win_rate
         ps_model.max_drawdown_pct = ps.max_drawdown_pct
         ps_model.total_trades = ps.total_trades
+
+        # Record a real, permanent equity snapshot — see load_graph_from_db's
+        # peak_equity restoration above and api/services/balance_sync.py
+        # (which appends the equivalent snapshot for live/broker-synced
+        # accounts). This is the paper-account / analysis-tick side of the
+        # same equity_curve_points history.
+        if user_id is not None:
+            db.add(EquityCurvePoint(user_id=user_id, equity=ps.total_equity))
 
         # Sync positions (clear + reinsert)
         db.query(Position).filter(Position.portfolio_id == ps_model.id).delete()

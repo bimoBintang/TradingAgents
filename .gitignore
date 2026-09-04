@@ -13,3 +13,19 @@ dist/
 *.sqlite3
 run_tv_test.py
 run_mcp_test.py
+
+# Secrets. TradingAgents/.env — which holds FERNET_KEY (the key that
+# decrypts every stored exchange API credential), CLERK_SECRET_KEY and the
+# LLM provider keys — is already covered by the nested TradingAgents/
+# .gitignore. This repo-root rule extends the same protection to every
+# other directory (orchestrator/, dashboard/, the root itself), none of
+# which had a .gitignore of their own. .env.example is the tracked template.
+.env
+.env.*
+!.env.example
+
+# dashboard/.env is deliberately still tracked: it holds only
+# VITE_CLERK_PUBLISHABLE_KEY, which Clerk designs to be public and which
+# ships inside the browser bundle either way. Already-tracked files ignore
+# these rules, so this line documents the intent rather than changing it.
+!dashboard/.env

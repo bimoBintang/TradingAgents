@@ -2,6 +2,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import get_stock_data
 from tradingagents.agents.utils.advanced_tools import get_peer_data
+from tradingagents.agents.utils.prompt_blocks import terse_suffix
 
 
 def create_correlation_analyst(llm):
@@ -43,6 +44,7 @@ def create_correlation_analyst(llm):
             "6. **Cross-Asset Verdict**: Clear conclusion on what the cross-asset landscape "
             "implies for the target asset direction.\n\n"
             "Append a Markdown correlation matrix table at the end."
+            + terse_suffix()
         )
 
         prompt = ChatPromptTemplate.from_messages([

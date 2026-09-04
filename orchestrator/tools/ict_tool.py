@@ -76,54 +76,70 @@ def detect_fair_value_gaps(
         return fvgs
 
     for i in range(2, n):
-        # 1. Bullish FVG: Candle 1 High < Candle 3 Low
-        if highs[i - 2] < lows[i]:
-            gap_bottom = highs[i - 2]
-            gap_top = lows[i]
-            gap_size = gap_top - gap_bottom
-            midpoint_ce = gap_bottom + (gap_size * config.fvg_partial_fill_pct)
+        is_bullish = highs[i - 2] < lows[i]
+        is_bearish = lows[i - 2] > highs[i]
+        if not (is_bullish or is_bearish):
+            continue
 
-            # Check if current/subsequent price filled the gap
-            current_low = lows[-1]
-            if current_low <= gap_bottom:
-                fill_status = "FULLY_FILLED"
-            elif current_low <= midpoint_ce:
-                fill_status = "PARTIALLY_FILLED"
+        if is_bullish:
+            gap_bottom, gap_top = highs[i - 2], lows[i]
+        else:
+            gap_bottom, gap_top = highs[i], lows[i - 2]
+
+        gap_size = gap_top - gap_bottom
+        midpoint_ce = gap_bottom + (gap_size * config.fvg_partial_fill_pct)
+
+        # Fill status is resolved by scanning EVERY bar after the gap
+        # formed, not by peeking at one arbitrary bar.
+        #
+        # This previously read `lows[-1]` / `highs[-1]` — the last bar of
+        # the entire series — regardless of which bar the gap formed on.
+        # Two separate defects: (a) a gap at index 5 in a 200-bar series
+        # was judged against bar 199, which is lookahead; (b) even live it
+        # only inspected ONE bar, so a gap that was traded through at bar
+        # 20 and left behind by bar 199 was still reported UNFILLED. Fill
+        # status was effectively random, and it feeds ict_bias, which the
+        # LLM agents read as evidence. (TVExecutionGuard also consumes
+        # ict_bias by design, but as of this writing that guard is not
+        # wired into any execution path — see its own module.)
+        fill_status = "UNFILLED"
+        partial_idx: Optional[int] = None
+        full_idx: Optional[int] = None
+
+        for j in range(i + 1, n):
+            if is_bullish:
+                touched_ce = lows[j] <= midpoint_ce
+                touched_full = lows[j] <= gap_bottom
             else:
-                fill_status = "UNFILLED"
+                touched_ce = highs[j] >= midpoint_ce
+                touched_full = highs[j] >= gap_top
 
-            fvgs.append({
-                "type": "BULLISH_FVG",
-                "index": i,
-                "gap_top": round(gap_top, 2),
-                "gap_bottom": round(gap_bottom, 2),
-                "midpoint_ce": round(midpoint_ce, 2),
-                "fill_status": fill_status,
-            })
-
-        # 2. Bearish FVG: Candle 1 Low > Candle 3 High
-        elif lows[i - 2] > highs[i]:
-            gap_top = lows[i - 2]
-            gap_bottom = highs[i]
-            gap_size = gap_top - gap_bottom
-            midpoint_ce = gap_bottom + (gap_size * config.fvg_partial_fill_pct)
-
-            current_high = highs[-1]
-            if current_high >= gap_top:
-                fill_status = "FULLY_FILLED"
-            elif current_high >= midpoint_ce:
+            if partial_idx is None and touched_ce:
+                partial_idx = j
                 fill_status = "PARTIALLY_FILLED"
-            else:
-                fill_status = "UNFILLED"
+            if touched_full:
+                full_idx = j
+                fill_status = "FULLY_FILLED"
+                break
 
-            fvgs.append({
-                "type": "BEARISH_FVG",
-                "index": i,
-                "gap_top": round(gap_top, 2),
-                "gap_bottom": round(gap_bottom, 2),
-                "midpoint_ce": round(midpoint_ce, 2),
-                "fill_status": fill_status,
-            })
+        fvgs.append({
+            "type": "BULLISH_FVG" if is_bullish else "BEARISH_FVG",
+            "index": i,
+            "gap_top": round(gap_top, 2),
+            "gap_bottom": round(gap_bottom, 2),
+            "gap_size_pct": round((gap_size / closes[i] * 100.0), 4) if closes[i] else 0.0,
+            "midpoint_ce": round(midpoint_ce, 2),
+            "fill_status": fill_status,
+            # Bars elapsed until each fill level — None if never reached
+            # within the supplied window. Consumed by the ICT measurement
+            # harness to compute empirical fill rates and time-to-fill.
+            "bars_to_partial_fill": (partial_idx - i) if partial_idx is not None else None,
+            "bars_to_full_fill": (full_idx - i) if full_idx is not None else None,
+            # Bars of data available after formation. A gap formed near the
+            # end of the window has had little chance to fill — excluding
+            # those is essential or the measured fill rate is biased down.
+            "bars_observed": n - 1 - i,
+        })
 
     return fvgs
 
@@ -233,28 +249,77 @@ def detect_liquidity_sweeps(
 def analyze_ict_concepts(
     ticker: str = "BTCUSDT",
     prices: Optional[List[float]] = None,
+    opens: Optional[List[float]] = None,
+    highs: Optional[List[float]] = None,
+    lows: Optional[List[float]] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Perform quantitative Inner Circle Trader (ICT / SMC) Smart Money analysis.
     Identifies Fair Value Gaps, Order Blocks, Liquidity Sweeps, and OTE Fib Zones.
+
+    Pass REAL `opens`/`highs`/`lows` alongside `prices` (closes) whenever
+    possible. Every concept this engine detects is defined by wick and body
+    geometry, so it is only as meaningful as the candles it is given:
+
+      - FVG needs true gaps between candle extremes
+      - Order Block strength = body / ATR, i.e. real body sizes
+      - Liquidity sweeps are wick penetrations, by definition
+
+    The returned `data_quality` field states which regime produced the
+    result; anything other than REAL_OHLC should not drive sizing.
     """
     ticker_clean = ticker.strip().upper()
     logger.info("[ICTEngine] Running ICT Smart Money analysis for %s", ticker_clean)
 
-    # Use provided prices or fallback simulation
-    if prices and len(prices) >= 15:
-        closes = prices
+    warnings: List[str] = []
+
+    has_real_ohlc = (
+        prices and opens and highs and lows
+        and len(prices) >= 15
+        and len(opens) == len(highs) == len(lows) == len(prices)
+    )
+
+    if has_real_ohlc:
+        closes = list(prices)
+        opens = list(opens)
+        highs = list(highs)
+        lows = list(lows)
+        data_quality = "REAL_OHLC"
+    elif prices and len(prices) >= 15:
+        # Closes only. Open/High/Low are DERIVED, not observed — every bar
+        # gets an identical 0.4% range, which makes displacement ratios
+        # near-constant and turns "FVG" into nothing more than "price rose
+        # >0.4% over two bars". Kept for backward compatibility, but the
+        # caller is told plainly not to trust structure from it.
+        closes = list(prices)
         opens = [p * 0.999 for p in prices]
         highs = [p * 1.002 for p in prices]
         lows = [p * 0.998 for p in prices]
+        data_quality = "SYNTHETIC_OHLC_FROM_CLOSES"
+        warnings.append(
+            "Open/High/Low were synthesized from close prices with fixed multipliers. "
+            "Fair Value Gaps, Order Block strength and Liquidity Sweeps are all defined "
+            "by candle geometry, so these results describe the synthesis, not the market. "
+            "Pass real opens/highs/lows."
+        )
     else:
-        # Generate representative price bars for analysis
+        # No market data at all — a deterministic sine wave. Useful only as
+        # a smoke test that the pipeline runs.
         base_price = 60000.0
         closes = [base_price + (i * 20.0) + (math.sin(i / 2.0) * 150.0) for i in range(40)]
         opens = [closes[i] - 10.0 if i % 2 == 0 else closes[i] + 10.0 for i in range(40)]
         highs = [max(opens[i], closes[i]) + 25.0 for i in range(40)]
         lows = [min(opens[i], closes[i]) - 25.0 for i in range(40)]
+        data_quality = "SIMULATED_NO_DATA"
+        warnings.append(
+            "No price data supplied — this analysis ran on a generated sine wave and "
+            "describes nothing about the real market. Do NOT use it for any decision."
+        )
+        logger.warning(
+            "[ICTEngine] %s analyzed with NO market data (sine-wave placeholder).",
+            ticker_clean,
+        )
 
     cfg = DEFAULT_ICT_CONFIG
     atr_list = calculate_atr(highs, lows, closes, period=14)
@@ -297,4 +362,10 @@ def analyze_ict_concepts(
             "fib_786": round(fib_786, 2),
             "in_ote_zone": in_ote,
         },
+        # Callers must be able to tell a genuine read from a placeholder.
+        # Never omit these two. (TVExecutionGuard is the intended consumer
+        # of ict_bias for blocking/resizing, but it is currently not
+        # invoked from any execution path.)
+        "data_quality": data_quality,
+        "warnings": warnings,
     }

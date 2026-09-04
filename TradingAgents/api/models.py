@@ -98,6 +98,59 @@ class Trade(Base):
 
     portfolio = relationship("PortfolioState", back_populates="trades")
 
+class BenchmarkDecision(Base):
+    """One strategy's call on one ticker at one moment, resolved forward.
+
+    Exists to answer the only question that justifies running an expensive,
+    non-deterministic multi-agent LLM stack: does it beat the dumb
+    alternatives? Historical backtesting cannot answer that for an LLM —
+    the model's pretraining already covers the period being "predicted",
+    so any backtest before its data cutoff is contaminated by lookahead.
+
+    The valid method is forward measurement: at the instant the agent
+    decides, record what it chose AND what each baseline would have chosen,
+    at the same price, with the same horizon. Resolve them all later
+    against real prices. Whatever the comparison then says is honest,
+    because none of the strategies could see the outcome.
+
+    One row per (strategy, ticker, decision moment).
+    """
+    __tablename__ = "benchmark_decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    strategy = Column(String, index=True, nullable=False)   # "agent" | "sma_20_50" | "buy_and_hold"
+    ticker = Column(String, index=True, nullable=False)
+    action = Column(String, nullable=False)                 # BUY | SELL | HOLD
+    confidence = Column(Float, nullable=True)
+
+    decided_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    entry_price = Column(Float, nullable=False)
+    horizon_days = Column(Integer, default=5)
+
+    # Filled in by resolve_due() once the horizon has elapsed.
+    resolved = Column(Boolean, default=False, index=True)
+    resolved_at = Column(DateTime, nullable=True)
+    exit_price = Column(Float, nullable=True)
+    return_pct = Column(Float, nullable=True)               # direction-signed, net of costs
+
+class EquityCurvePoint(Base):
+    """Real, broker-synced equity snapshot — one row per balance_sync tick.
+
+    Exists so max_drawdown_pct can be computed from a true historical
+    peak that survives server restarts. PortfolioManager.peak_equity
+    (the previous source of that number) is an in-memory value that gets
+    reset to the *current* equity every time the process restarts
+    (api/db_sync.py's load_graph_from_db) — silently forgetting any real
+    drawdown that happened before the restart.
+    """
+    __tablename__ = "equity_curve_points"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    equity = Column(Float, nullable=False)
+    recorded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
 class PlatformConfig(Base):
     __tablename__ = "platform_config"
     id = Column(Integer, primary_key=True, default=1)

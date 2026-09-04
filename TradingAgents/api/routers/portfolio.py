@@ -13,6 +13,7 @@ from api.dependencies import get_graph
 from api.auth import get_current_user
 from api.models import User
 from api.user_context import get_user_portfolio
+from api.services.pnl import compute_daily_pnl
 
 router = APIRouter(prefix="/api/portfolio", tags=["Portfolio"])
 
@@ -38,7 +39,10 @@ async def get_portfolio(
         cash_balance=ps.cash_balance,
         total_equity=ps.total_equity,
         total_pnl=ps.total_pnl,
-        daily_pnl=ps.daily_pnl,
+        # Computed fresh from real trade timestamps, not ps.daily_pnl —
+        # see api/services/pnl.py for why that stored value drifts into
+        # "since last restart" rather than "today".
+        daily_pnl=compute_daily_pnl(ctx["db"], ps.id, ctx["positions"]),
         win_rate=ps.win_rate,
         max_drawdown_pct=ps.max_drawdown_pct,
         total_trades=ps.total_trades,

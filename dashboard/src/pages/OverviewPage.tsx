@@ -6,10 +6,11 @@ import { MarketSelector } from '../components/dashboard/MarketSelector';
 import { Card, CardContent } from '../components/ui/Card';
 import { Alert, AlertDescription } from '../components/ui/Alert';
 import { TradeActivityPanel } from '../components/dashboard/TradeActivityPanel';
+import { ProfitCalendar } from '../components/dashboard/ProfitCalendar';
 import { OpenPositionsPanel } from '../components/dashboard/OpenPositionsPanel';
 import { AgentInsights } from '../components/dashboard/AgentInsights';
 import PredictionPanel from '../components/dashboard/PredictionPanel';
-import { usePortfolio } from '../hooks/useApi';
+import { usePortfolio, useConfig } from '../hooks/useApi';
 import { usePortfolioWS, useChartControlWS } from '../hooks/useWebSocket';
 import { Wallet, TrendingUp, TrendingDown, Target, ShieldAlert, Activity, DollarSign, Wifi, WifiOff } from 'lucide-react';
 
@@ -47,6 +48,14 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setAct
   // Use WS data when connected, otherwise SWR
   const portfolio = wsStatus === 'connected' ? wsPortfolio : swrPortfolio;
   const isLive = wsStatus === 'connected';
+
+  // Live exchange (if any) — drives ChartPanel's real-time ccxt feed
+  // instead of the yfinance REST poll. null for paper trading, stocks,
+  // or no broker connected, in which case ChartPanel is unaffected.
+  const { data: configData } = useConfig();
+  const execConfig = (configData?.config as any)?.execution;
+  const liveExchange: string | null =
+    execConfig?.broker === 'ccxt' && execConfig?.exchange ? execConfig.exchange : null;
 
   const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pnlColor = (n: number) => n >= 0 ? 'text-emerald-500' : 'text-rose-400';
@@ -178,12 +187,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setAct
             </Alert>
           )}
 
-        </div>
           {/* NEW FULL WIDTH CHART PANEL */}
-          <ChartPanel ref={chartPanelRef} ticker={activeTicker} onStateChange={handleChartStateChange} />
+          <ChartPanel ref={chartPanelRef} ticker={activeTicker} onStateChange={handleChartStateChange} liveExchange={liveExchange} />
 
           {/* TRADINGVIEW TELEMETRY & VISION PANEL */}
           <TradingViewPanel activeTicker={activeTicker} className="mt-4" />
+        </div>
       </div>
 
       <div className="grid grid-cols-12 gap-4 mt-6">
@@ -206,6 +215,11 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setAct
       {/* MID ROW: EVENT TAPE (FULL WIDTH) */}
       <div className="grid grid-cols-12 gap-4 mt-4">
         <TradeActivityPanel ticker={activeTicker} className="col-span-12 h-[300px]" />
+      </div>
+
+      {/* PROFIT CALENDAR (FULL WIDTH) */}
+      <div className="grid grid-cols-12 gap-4 mt-4">
+        <ProfitCalendar className="col-span-12" />
       </div>
 
       {/* BOTTOM ROW: PREDICTION MARKETS FULL-WIDTH */}

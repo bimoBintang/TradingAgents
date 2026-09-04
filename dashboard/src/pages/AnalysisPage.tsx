@@ -69,6 +69,10 @@ export const AnalysisPage: React.FC = () => {
   const orderResult = rawData?.order_result;
   const error = rawData?.error;
 
+  // Matches TradeAction's real enum values (tradingagents/execution/order_models.py).
+  const isBullish = decision?.action === 'BUY' || decision?.action === 'STRONG_BUY';
+  const isBearish = decision?.action === 'SELL' || decision?.action === 'STRONG_SELL';
+
   return (
     <div className="flex flex-col gap-6">
 
@@ -191,24 +195,40 @@ export const AnalysisPage: React.FC = () => {
       {/* ── Results Section ───────────────────────────── */}
       {currentStatus === 'completed' && decision && (
         <>
-          {/* Decision Card */}
+          {/* Decision Card — decision is the normalized DecisionSummary
+              shape (api/schemas.py) from both the REST and WebSocket
+              paths now. This used to compare `decision === 'BUY'` against
+              what was actually a raw JSON string of the whole
+              TradeDecision object — never equal, so the card was always
+              neutral gray and rendered the unparsed JSON text as the
+              "Decision" value instead of just "BUY". */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <Card className={`backdrop-blur-md border ${
-              decision === 'BUY' ? 'bg-emerald-900/20 border-emerald-500/30' :
-              decision === 'SELL' ? 'bg-rose-900/20 border-rose-500/30' :
+              isBullish ? 'bg-emerald-900/20 border-emerald-500/30' :
+              isBearish ? 'bg-rose-900/20 border-rose-500/30' :
               'bg-slate-900/40 border-slate-700/50'
             }`}>
               <CardContent className="p-5 text-center">
                 <div className="text-xs font-semibold text-slate-400 mb-1">Decision</div>
                 <div className={`text-3xl font-black ${
-                  decision === 'BUY' ? 'text-emerald-400' :
-                  decision === 'SELL' ? 'text-rose-400' : 'text-amber-400'
+                  isBullish ? 'text-emerald-400' :
+                  isBearish ? 'text-rose-400' : 'text-amber-400'
                 }`}>
-                  {typeof decision === 'string' ? decision : JSON.stringify(decision)}
+                  {decision.action.replace(/_/g, ' ')}
                 </div>
                 <div className="flex items-center justify-center gap-1 mt-2">
-                  {decision === 'BUY' ? <TrendingUp size={14} className="text-emerald-400" /> : decision === 'SELL' ? <TrendingDown size={14} className="text-rose-400" /> : null}
+                  {isBullish ? <TrendingUp size={14} className="text-emerald-400" /> : isBearish ? <TrendingDown size={14} className="text-rose-400" /> : null}
+                  {decision.confidence_score != null && (
+                    <span className="text-xs text-slate-400 font-mono ml-1">
+                      {Math.round(decision.confidence_score * 100)}% confidence
+                    </span>
+                  )}
                 </div>
+                {!decision.is_structured && (
+                  <div className="text-[10px] text-amber-500/80 mt-2">
+                    Simplified result — structured details unavailable for this run.
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -235,6 +255,45 @@ export const AnalysisPage: React.FC = () => {
               </>
             )}
           </div>
+
+          {/* Decision Detail — reasoning + key trade parameters. This is
+              new: previously the raw unparsed JSON string held all of
+              this, but nothing ever surfaced it beyond the (broken)
+              headline value above. */}
+          {(decision.reasoning || decision.stop_loss_pct != null || decision.take_profit_pct != null || decision.quantity_pct != null) && (
+            <Card className="bg-slate-900/40 backdrop-blur-md border border-slate-700/50">
+              <CardHeader className="py-3 border-b border-slate-800/50">
+                <CardTitle className="text-sm">Trade Rationale</CardTitle>
+              </CardHeader>
+              <CardContent className="p-5 flex flex-col gap-4">
+                {decision.reasoning && (
+                  <p className="text-sm text-slate-300 leading-relaxed">{decision.reasoning}</p>
+                )}
+                <div className="flex flex-wrap gap-4 text-xs">
+                  {decision.quantity_pct != null && (
+                    <span className="text-slate-400">Size: <b className="text-slate-200 font-mono">{(decision.quantity_pct * 100).toFixed(1)}%</b> of portfolio</span>
+                  )}
+                  {decision.stop_loss_pct != null && (
+                    <span className="text-slate-400">Stop-loss: <b className="text-rose-400 font-mono">-{(decision.stop_loss_pct * 100).toFixed(1)}%</b></span>
+                  )}
+                  {decision.take_profit_pct != null && (
+                    <span className="text-slate-400">Take-profit: <b className="text-emerald-400 font-mono">+{(decision.take_profit_pct * 100).toFixed(1)}%</b></span>
+                  )}
+                  {decision.leverage != null && decision.leverage > 1 && (
+                    <span className="text-slate-400">Leverage: <b className="text-amber-400 font-mono">{decision.leverage}x</b> ({decision.position_side})</span>
+                  )}
+                  {decision.risk_reward_ratio != null && (
+                    <span className="text-slate-400">Risk/Reward: <b className="text-slate-200 font-mono">1:{decision.risk_reward_ratio.toFixed(1)}</b></span>
+                  )}
+                </div>
+                {decision.key_factors && decision.key_factors.length > 0 && (
+                  <ul className="flex flex-col gap-1 text-xs text-slate-400 list-disc list-inside">
+                    {decision.key_factors.map((f: string, i: number) => <li key={i}>{f}</li>)}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Reports Tabs */}
           {reports && (

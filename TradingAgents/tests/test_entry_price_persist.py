@@ -41,6 +41,9 @@ def _make_broker_with_db(db):
     broker._cache_lock = threading.Lock()
     broker._retry_config = RetryConfig(max_retries=0)
     broker._db = db
+    # place_order() branches on self.market_type — object.__new__() skips
+    # __init__, so this must be set explicitly (see test_entry_price_cache.py).
+    broker.market_type = "spot"
     return broker
 
 
@@ -51,7 +54,12 @@ class TestDatabaseEntryPriceTable:
     def test_schema_v2_creates_table(self):
         db, path = _make_tmp_db()
         try:
-            assert db.get_schema_version() == 2
+            # Compared against CURRENT_SCHEMA_VERSION rather than a literal:
+            # this test is about the v2 table existing, not about v2 being
+            # the newest migration, so adding a later migration must not
+            # break it.
+            assert db.get_schema_version() >= 2
+            assert db.get_schema_version() == Database.CURRENT_SCHEMA_VERSION
             # Table should exist — inserting should not raise
             db.upsert_entry_price("BTC/USDT", 40000.0, 0.5)
         finally:

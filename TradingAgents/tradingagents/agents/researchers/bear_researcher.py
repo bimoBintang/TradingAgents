@@ -2,7 +2,7 @@ from langchain_core.messages import AIMessage
 import time
 import json
 from tradingagents.agents.utils.prompt_blocks import (
-    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, STRICT_SYSTEM_PREAMBLE_NO_TOOLS,
+    ANTI_HALLUCINATION, ANTI_CONFIRMATION_BIAS, get_strict_system_preamble_no_tools,
 )
 
 
@@ -27,7 +27,7 @@ def create_bear_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""{STRICT_SYSTEM_PREAMBLE_NO_TOOLS}
+        prompt = f"""{get_strict_system_preamble_no_tools()}
 
 You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
 

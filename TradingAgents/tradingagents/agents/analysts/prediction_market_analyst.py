@@ -10,6 +10,7 @@ from tradingagents.agents.utils.polymarket_tools import (
     get_prediction_markets,
     get_market_price,
 )
+from tradingagents.agents.utils.prompt_blocks import terse_suffix
 
 
 def create_prediction_market_analyst(llm):
@@ -55,6 +56,7 @@ def create_prediction_market_analyst(llm):
             "- Explain the CAUSAL CHAIN: why does this probability affect the ticker?\n"
             "- These are 'Wisdom of the Crowd' signals backed by real money — "
             "they often lead traditional news by hours or days."
+            + terse_suffix()
         )
 
         prompt = ChatPromptTemplate.from_messages(

@@ -2,6 +2,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import get_global_news
 from tradingagents.agents.utils.advanced_tools import get_macro_indicators
+from tradingagents.agents.utils.prompt_blocks import terse_suffix
 
 
 def create_macro_geo_analyst(llm):
@@ -36,6 +37,7 @@ def create_macro_geo_analyst(llm):
             "7. **Macro Verdict**: Clear conclusion on whether the macro environment is "
             "favorable, neutral, or hostile for the target asset.\n\n"
             "Append a Markdown table at the end with all macro indicators and their signals."
+            + terse_suffix()
         )
 
         prompt = ChatPromptTemplate.from_messages([

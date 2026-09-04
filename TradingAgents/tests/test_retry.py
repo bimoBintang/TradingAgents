@@ -137,6 +137,9 @@ def _make_broker_with_retry():
     broker._cache_lock = threading.Lock()
     broker._retry_config = RetryConfig(max_retries=2, base_delay=0.01, max_delay=0.05)
     broker._db = None
+    # place_order() branches on self.market_type — object.__new__() skips
+    # __init__, so this must be set explicitly (see test_entry_price_cache.py).
+    broker.market_type = "spot"
     return broker
 
 

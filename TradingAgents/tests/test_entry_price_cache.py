@@ -30,6 +30,11 @@ def _make_broker():
     broker._cache_lock = threading.Lock()
     broker._retry_config = RetryConfig(max_retries=0)  # No retries in tests
     broker._db = None
+    # place_order() branches on self.market_type (futures hedge-mode
+    # positionSide handling) — object.__new__() skips __init__, so this
+    # must be set explicitly or every place_order() call raises
+    # AttributeError and gets swallowed into a REJECTED OrderResult.
+    broker.market_type = "spot"
     return broker
 
 

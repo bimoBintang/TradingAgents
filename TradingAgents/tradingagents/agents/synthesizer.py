@@ -1,6 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate
 from tradingagents.agents.utils.prompt_blocks import (
-    ANTI_HALLUCINATION, STRICT_SYSTEM_PREAMBLE_NO_TOOLS
+    ANTI_HALLUCINATION, get_strict_system_preamble_no_tools
 )
 from tradingagents.dataflows.data_validator import DataValidator
 
@@ -61,7 +61,7 @@ def create_analyst_synthesizer(llm):
         )
         
         prompt = ChatPromptTemplate.from_messages([
-            ("system", STRICT_SYSTEM_PREAMBLE_NO_TOOLS),
+            ("system", get_strict_system_preamble_no_tools()),
             ("human", "Here are the individual analyst reports:\n\n{reports_text}\n\nPlease synthesize them."),
         ])
         

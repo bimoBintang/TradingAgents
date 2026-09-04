@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.advanced_tools import get_onchain_metrics, get_funding_rates
+from tradingagents.agents.utils.prompt_blocks import terse_suffix
 
 
 def create_onchain_analyst(llm):
@@ -34,6 +35,7 @@ def create_onchain_analyst(llm):
             "7. **On-Chain Verdict**: Clear conclusion on whether on-chain signals "
             "are bullish, bearish, or neutral.\n\n"
             "Append a Markdown table at the end summarizing the key on-chain metrics."
+            + terse_suffix()
         )
 
         prompt = ChatPromptTemplate.from_messages([

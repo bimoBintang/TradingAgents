@@ -264,3 +264,28 @@ async def save_note(
     db.refresh(note)
     return note
 
+
+
+# ── Forward Benchmark: agent vs baselines ─────────────────────────────
+#
+# Reads the lookahead-free comparison accumulated by
+# api/services/forward_benchmark.py. Lives under /journal because it is
+# performance review, not live trading state.
+
+@router.get("/benchmark")
+async def get_forward_benchmark(
+    ticker: Optional[str] = Query(None, description="Restrict to one ticker"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Compare the agent stack against deterministic baselines, measured forward.
+
+    Every strategy was recorded at the same instant, entry price, horizon
+    and cost — and none could see the outcome, so unlike a historical
+    backtest of an LLM this is free of pretraining lookahead.
+    """
+    from api.services.forward_benchmark import build_comparison, format_comparison_report
+
+    comparison = build_comparison(db, user.id, ticker=ticker)
+    comparison["report_markdown"] = format_comparison_report(comparison)
+    return comparison

@@ -43,10 +43,13 @@ graph TD
         Trader --> Risk[RiskDebateState - Aggressive vs Conservative vs Neutral]
     end
 
-    subgraph "4. Safety & Execution Guard Layer (orchestrator/guards/)"
-        Risk --> Guard[TVExecutionGuard - Fail-Closed & Symmetric Conflict Matrix]
-        Guard --> CB[CircuitBreaker - Drawdown -15% & Kill Switch]
-        CB --> Exec[Binance / Paper Order Execution / tv_backtest]
+    classDef inactive fill:#eee,stroke:#999,stroke-dasharray:5 5,color:#666
+
+    subgraph "4. Safety & Execution Guard Layer (tradingagents/execution/)"
+        Risk --> RC[RiskController - Kill Switch, Daily Loss, Consecutive Losses]
+        RC --> OFG[OrderFlowGuard - Slippage, Spread, Notional Limits]
+        OFG --> Exec[CCXT / Paper Order Execution + Venue-Resident Stop]
+        Guard[TVExecutionGuard - NOT WIRED, see note below]:::inactive
     end
 
     subgraph "5. Enterprise Persistence Stack (Docker)"
@@ -70,10 +73,21 @@ graph TD
    - **`RiskDebateState`**: Perdebatan 3 arah (*Aggressive*, *Conservative*, *Neutral*) untuk mengevaluasi ukuran posisi dan risiko portofolio.
 
 3. **Lapisan Keamanan Finansial & Guarding (`orchestrator/guards/`)**:
-   - Keputusan dari agen tidak langsung dieksekusi ke pasar, melainkan difilter oleh **`TVExecutionGuard`**:
-     - **Fail-Closed Principle**: Menolak/meminta konfirmasi manual jika data validasi CDP/TA tidak lengkap.
-     - **Symmetric Conflict Matrix**: Memblokir sinyal berlawanan antara TA Klasik vs ICT Order Blocks (High/Medium strength).
-     - **Multiplicative Position Sizing**: Menyesuaikan alokasi modal Kelly Criterion secara otomatis.
+   - Keputusan dari agen tidak langsung dieksekusi ke pasar, melainkan difilter oleh `ExecutionEngine`:
+     - **`RiskController`**: Kill switch (persisten lintas restart), batas rugi harian, batas rugi beruntun, batas eksposur.
+     - **`OrderFlowGuard`**: Batas slippage, spread, dan notional per order.
+     - **Protective Stop**: Setiap fill langsung diikuti *stop order* yang berada **di venue**, bukan di memori proses — posisi tetap terlindungi meski bot mati.
+     - **Fractional Kelly Sizing**: Ukuran posisi dari Kelly yang dipotong, dengan *Wilson lower bound* pada win rate.
+
+   > ⚠️ **`TVExecutionGuard` belum tersambung.** Kelas ini ada di
+   > `orchestrator/guards/`, tetapi **tidak dipanggil** oleh jalur eksekusi mana pun —
+   > hanya oleh test-nya sendiri. Ia tidak melindungi order Anda hari ini.
+   > Dua alasan ia belum dinyalakan: (1) inputnya (`visual_confidence` dari
+   > ChartVision) bernilai `None` selama TradingView Desktop tidak berjalan dengan
+   > CDP port terbuka — kondisi normal — sehingga menyalakannya sekarang akan
+   > menolak hampir semua trade; (2) aturan konflik TA/ICT-nya belum diukur
+   > *walk-forward*, jadi memasangnya berarti memberi hak veto pada sinyal yang
+   > belum terbukti punya *edge*. Lihat docstring kelasnya untuk detail.
    - **`CircuitBreaker`**: Menghentikan seluruh aktivitas jika terjadi kegagalan $N=3$ berturut-turut atau portfolio drawdown menembus $-15\%$.
 
 4. **Enterprise Docker Persistence Stack**:
@@ -111,7 +125,7 @@ graph TD
         GR[GuardRails\nHalusinasi/Loop]
         TM[TokenMeter\nBudget API]
         CB[CircuitBreaker\nKill Switch]
-        EG[TVExecutionGuard\nFail-Closed Safety]
+        EG[TVExecutionGuard\nBELUM TERSAMBUNG]
     end
     
     Core --> Memory
@@ -161,7 +175,7 @@ Sistem ini terdiri dari 4 fase arsitektur utama CMAOP ditambah integrasi Trading
 - **`GuardRails`**: Mencegah halusinasi ticker/action dan mengunci batasan format output.
 - **`TokenMeter`**: Membatasi konsumsi token LLM API (`BudgetExceededError`).
 - **`CircuitBreaker`**: Pelindung tingkat sistem (Trigger $N=3$ fails, Drawdown limit $-15\%$, Emergency Kill Switch, & *Manual Reset Only*).
-- **`TVExecutionGuard`**: Pelindung finansial **Fail-Closed Architecture**, **Symmetric Long & Short Conflict Matrix**, **60-Second Order Timeout**, dan **Multiplicative Kelly Position Sizing**.
+- **`TVExecutionGuard`** *(belum tersambung ke jalur eksekusi)*: Rancangan **Fail-Closed Architecture**, **Symmetric Long & Short Conflict Matrix**, dan **60-Second Order Timeout**. Kode ada dan lulus test, tetapi tidak dipanggil saat order dikirim — perlindungan order yang benar-benar aktif berada di `RiskController` + `OrderFlowGuard` + venue-resident stop di `ExecutionEngine`.
 
 ### 4. SDK & CLI (Phase 4)
 - Decorator Python terpadu (`@agent` dan `@tool`) untuk kemudahan pembuatan agen baru.

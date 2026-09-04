@@ -38,11 +38,16 @@ export const AgentInsights: React.FC<AgentInsightsProps> = ({ ticker, className 
   const isFailed = analysis?.status === 'failed' || error;
   const isCompleted = analysis?.status === 'completed';
 
-  // Extract decision safely
+  // analysis.decision is always the normalized DecisionSummary shape now
+  // (api/schemas.py) — no more typeof-guessing. It used to check
+  // `typeof decision === 'object'`, which was NEVER true (the backend
+  // always sent a string, sometimes JSON-encoded) — action silently
+  // stuck at 'PENDING' and confidence at 0% no matter what the AI
+  // actually decided.
   const decision = analysis?.decision;
-  const action = typeof decision === 'object' && decision !== null ? (decision as any).action : 'PENDING';
-  const confidence = typeof decision === 'object' && decision !== null ? (decision as any).confidence * 100 : 0;
-  const reasoning = typeof decision === 'object' && decision !== null ? (decision as any).reasoning : '';
+  const action = decision?.action ?? 'PENDING';
+  const confidence = (decision?.confidence_score ?? 0) * 100;
+  const reasoning = decision?.reasoning ?? '';
   const reports: any = analysis?.reports || {};
 
   // Color mappings
@@ -50,11 +55,16 @@ export const AgentInsights: React.FC<AgentInsightsProps> = ({ ticker, className 
   let confColor = 'bg-slate-600';
   let glowColor = 'bg-slate-500/5';
   
-  if (action === 'BUY' || action === 'STRONG BUY') {
+  // Matches TradeAction's real enum values (tradingagents/execution/order_models.py):
+  // STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL. This used to check 'STRONG BUY'
+  // (space) and 'SHORT' (not a valid action at all) — neither ever
+  // matched, so a STRONG_BUY/STRONG_SELL decision fell through to the
+  // neutral gray styling instead of emerald/rose.
+  if (action === 'BUY' || action === 'STRONG_BUY') {
     actionColor = 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
     confColor = 'bg-emerald-500';
     glowColor = 'bg-emerald-500/5';
-  } else if (action === 'SELL' || action === 'SHORT') {
+  } else if (action === 'SELL' || action === 'STRONG_SELL') {
     actionColor = 'text-rose-400 bg-rose-500/10 border-rose-500/20';
     confColor = 'bg-rose-500';
     glowColor = 'bg-rose-500/5';
@@ -177,7 +187,7 @@ export const AgentInsights: React.FC<AgentInsightsProps> = ({ ticker, className 
                 <div className="text-right flex items-center gap-3">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Master Verdict</span>
                   <span className={cx("text-xs font-black tracking-widest px-3 py-1 rounded border", actionColor)}>
-                    {action}
+                    {action.replace(/_/g, ' ')}
                   </span>
                 </div>
               </div>
