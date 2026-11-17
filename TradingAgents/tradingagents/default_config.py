@@ -27,6 +27,13 @@ DEFAULT_CONFIG = {
     # or point GOOGLE_API_KEY-based auth explicitly if that becomes supported.
     "fast_think_llm_provider": "anthropic",
     "fast_think_llm": "claude-haiku-4-5",
+
+    # Model for the ChartVision analyst (needs image input). None = use the smart tier.
+    "vision_llm_provider": None,
+    "vision_llm": None,
+
+    # "parallel" (fan-out, default) or "sequential" (one analyst at a time; for a single local GPU).
+    "analyst_execution": "parallel",
     
     "backend_url": "https://api.anthropic.com",
     # Provider-specific thinking configuration
@@ -110,13 +117,6 @@ DEFAULT_CONFIG = {
         "kelly_multiplier": 0.25,            # 0.25 = quarter-Kelly, 0.5 = half-Kelly
     },
     # ── MCP Server Configuration ──────────────────────────────────────
-    # Which account mcp_server/server.py acts as when Claude Desktop/Code
-    # calls read_portfolio/list_recent_trades/run_analysis. The MCP
-    # server has no HTTP request/JWT to authenticate with (it's a local
-    # subprocess), so identity is fixed here instead of per-request.
-    "mcp": {
-        "user_email": "",                    # Set via Settings > MCP Server, or TRADINGAGENTS_MCP_USER_EMAIL env var
-    },
     # ── Position Tracker Configuration (Phase 2) ─────────────────────
     "position_tracker": {
         "trailing_stop_pct": 0.0,            # Trailing stop % (0.0 = disabled, e.g., 0.05 = 5%)
@@ -125,7 +125,7 @@ DEFAULT_CONFIG = {
     # ── Execution Configuration (Phase 3: Broker Integration) ──────────
     "execution": {
         "mode": "paper",                     # disabled | paper | live
-        "broker": "paper",                   # paper | ccxt | alpaca
+        "broker": "paper",                   # paper | ccxt | alpaca | mt5
         # Broker-specific settings
         "exchange": None,                    # None until user selects: binance, bybit, okx, bitget, etc.
         "api_key": "",                       # Set by user via Dashboard
@@ -142,6 +142,7 @@ DEFAULT_CONFIG = {
         "min_confidence": 0.5,               # Minimum confidence to execute
         "max_daily_loss_pct": 0.05,          # Kill switch: stop if daily loss > 5%
         "cooldown_seconds": 300,             # Min seconds between trades on same ticker
+        "exit_monitor_interval_seconds": 60, # api/services/exit_monitor.py: trailing/ATR/time exits for live users
         "balance_sync_interval_seconds": 30, # How often api/services/balance_sync.py polls the real broker balance
         "commission_pct": 0.001,             # Simulated commission for paper broker (0.1%)
         "slippage_pct": 0.0005,              # Simulated slippage for paper broker (0.05%)
@@ -230,5 +231,38 @@ DEFAULT_CONFIG = {
         "poll_interval_seconds": 5,                      # OBI re-check interval during wait
         "wall_detection_usd": 100000,                    # Threshold (USD) for wall detection
     },
+    # ── Autopilot goals (api/services/autopilot.py) ────────────────────
+    # The AI stops by itself when a goal is met. All None = no goal set.
+    "autopilot": {
+        "target_profit_pct": None,    # stop when equity is up this % since start
+        "max_loss_pct": None,         # stop when equity is down this % since start
+        "end_at": None,               # ISO timestamp (UTC); stop at this time
+        "started_at": None,           # set by start()
+        "start_equity": None,         # baseline equity set by start()
+        "stopped_reason": None,       # target_profit | max_loss | end_at | (None while running)
+        "stopped_at": None,
+    },
 }
 
+
+
+# ── Local LLM preset (Ollama): TRADINGAGENTS_LLM_PRESET=ollama ───────────────
+# deep: deepseek-r1:32b (no tool-calling, so deep only); smart/fast must support tools.
+# Bull/Bear/Trader move to the deep tier so r1 argues and emits <TRADE_DECISION>.
+OLLAMA_PRESET = {
+    "llm_provider": "ollama",
+    "deep_think_llm_provider": "ollama",
+    "deep_think_llm": "deepseek-r1:32b",
+    "smart_think_llm_provider": "ollama",
+    "smart_think_llm": "qwen2.5:7b",  # same weights as fast: one resident model
+    "fast_think_llm_provider": "ollama",
+    "fast_think_llm": "qwen2.5:7b",
+    "vision_llm_provider": "ollama",
+    "vision_llm": "qwen2.5vl:7b",
+    "analyst_execution": "sequential",
+    "debate_llm_tier": "deep",
+    "llm_timeout": 900,  # seconds; r1 reasoning traces are long
+}
+
+if os.getenv("TRADINGAGENTS_LLM_PRESET") == "ollama":
+    DEFAULT_CONFIG.update(OLLAMA_PRESET)

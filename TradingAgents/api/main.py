@@ -13,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.dependencies import init_graph
-from api.routers import system, portfolio, journal, analysis, config, market_data, admin, patterns, pending, tradingview, chart_control
+from api.routers import system, portfolio, journal, analysis, config, market_data, patterns, pending, tradingview, chart_control, autopilot
 from api.routers import websocket as ws_router
 from api.auth import get_current_user
 from api.database import engine, SessionLocal
@@ -35,9 +35,6 @@ async def lifespan(app: FastAPI):
 
     logger.info("🚀 Initialising Turso SQLite Database…")
     Base.metadata.create_all(bind=engine)
-
-    with SessionLocal() as db:
-        pass # Migrated to Clerk Just-in-time identity sync
 
     logger.info("🚀 Initialising TradingAgents Graph…")
     init_graph()  # graceful — never raises
@@ -80,7 +77,37 @@ async def lifespan(app: FastAPI):
 
             await run_in_threadpool(_resolve)
 
+        async def _run_exit_monitor():
+            from api.services.exit_monitor import monitor_all_live_users
+            await run_in_threadpool(monitor_all_live_users)
+
+        async def _run_autopilot():
+            # One tick at a time (service lock). Only safe with a single uvicorn worker.
+            from api.services.autopilot import run_tick
+            await run_in_threadpool(run_tick)
+
+        exit_interval = int(os.getenv(
+            "EXECUTION_EXIT_MONITOR_INTERVAL_SECONDS",
+            DEFAULT_CONFIG["execution"]["exit_monitor_interval_seconds"],
+        ))
+
         _balance_sync_scheduler = AsyncIOScheduler()
+        _balance_sync_scheduler.add_job(
+            _run_exit_monitor,
+            "interval",
+            seconds=exit_interval,
+            id="exit_monitor",
+            max_instances=1,
+            coalesce=True,
+        )
+        _balance_sync_scheduler.add_job(
+            _run_autopilot,
+            "interval",
+            seconds=60,
+            id="autopilot",
+            max_instances=1,
+            coalesce=True,
+        )
         _balance_sync_scheduler.add_job(
             _run_balance_sync,
             "interval",
@@ -143,8 +170,8 @@ app.include_router(analysis.router)
 app.include_router(config.router)
 app.include_router(market_data.router)
 app.include_router(patterns.router)
-app.include_router(admin.router)
 app.include_router(pending.router)
+app.include_router(autopilot.router)
 app.include_router(tradingview.router)
 app.include_router(chart_control.router)
 app.include_router(ws_router.router)

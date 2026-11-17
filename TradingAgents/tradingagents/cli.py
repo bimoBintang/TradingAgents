@@ -99,12 +99,23 @@ Examples:
 def _load_config(config_path: Optional[str] = None) -> dict:
     """Load configuration from file or defaults."""
     from tradingagents.default_config import DEFAULT_CONFIG
-    config = DEFAULT_CONFIG.copy()
+    import copy
+    config = copy.deepcopy(DEFAULT_CONFIG)
+
+    def deep_merge(base: dict, over: dict) -> dict:
+        # nested blocks (execution, scheduler, ...) must merge, not replace: a partial
+        # "execution" in the file would otherwise drop every other default in that block
+        for k, v in over.items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict):
+                deep_merge(base[k], v)
+            else:
+                base[k] = v
+        return base
 
     if config_path and os.path.exists(config_path):
         with open(config_path, "r") as f:
             user_config = json.load(f)
-        config.update(user_config)
+        deep_merge(config, user_config)
         print(f"[CLI] Loaded config from {config_path}")
 
     return config

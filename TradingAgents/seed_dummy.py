@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 
 from api.database import SessionLocal, engine
 from api.models import Base, User, PortfolioState, Position, Trade
-from api.auth import hash_password
+from api.auth import get_or_create_owner
 
 def seed():
     print("🚀 Creating database tables...")
@@ -12,16 +12,9 @@ def seed():
     
     db = SessionLocal()
     
-    # 1. Seed Admin User
-    admin_email = "admin@tradingagents.ai"
-    if not db.query(User).filter(User.email == admin_email).first():
-        db.add(User(
-            email=admin_email,
-            name="Admin User",
-            hashed_password=hash_password("admin123")
-        ))
-        print("✅ Seeded Admin User.")
-        
+    # 1. Owner (single-user; created if missing)
+    get_or_create_owner(db)
+
     # 2. Seed Portfolio State
     ps = db.query(PortfolioState).first()
     if not ps:

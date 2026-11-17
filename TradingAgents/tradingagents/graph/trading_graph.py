@@ -81,6 +81,11 @@ try:
 except ImportError:
     AlpacaBroker = None  # type: ignore[assignment,misc]
 
+try:
+    from tradingagents.execution.brokers.mt5_broker import MT5Broker
+except ImportError:
+    MT5Broker = None  # type: ignore[assignment,misc]
+
 from .conditional_logic import ConditionalLogic
 from .setup import GraphSetup
 from .propagation import Propagator
@@ -146,8 +151,14 @@ def _create_broker(config: Dict[str, Any], db=None) -> BaseBroker:
             paper=exec_cfg.get("mode", "paper") != "live",
         )
 
+    elif broker_type == "mt5":
+        if MT5Broker is None:
+            raise ImportError("Broker 'mt5' is unavailable (mt5_broker failed to import).")
+        # Single account: credentials come from MT5_* env, not from per-user config.
+        broker = MT5Broker()
+
     else:
-        raise ValueError(f"Unknown broker type: {broker_type}. Use 'paper', 'ccxt', or 'alpaca'.")
+        raise ValueError(f"Unknown broker type: {broker_type}. Use 'paper', 'ccxt', 'alpaca', or 'mt5'.")
 
     # Health check: ping broker to verify connectivity
     try:
@@ -159,6 +170,12 @@ def _create_broker(config: Dict[str, Any], db=None) -> BaseBroker:
 
     return broker
 
+ALL_ANALYSTS = ["market", "social", "news", "fundamentals", "quant", "onchain",
+                "macro_geo", "correlation", "ict", "chart_vision"]
+# Forex has no fundamentals/on-chain/social-sentiment data; these are the ones that apply.
+FOREX_ANALYSTS = ["market", "news", "macro_geo", "correlation", "quant", "ict", "chart_vision"]
+
+
 class TradingAgentsGraph:
     """Main class that orchestrates the trading agents framework.
     
@@ -169,8 +186,7 @@ class TradingAgentsGraph:
 
     def __init__(
         self,
-        selected_analysts=["market", "social", "news", "fundamentals",
-                           "quant", "onchain", "macro_geo", "correlation"],
+        selected_analysts=None,
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
@@ -178,13 +194,17 @@ class TradingAgentsGraph:
         """Initialize the trading agents graph and components.
 
         Args:
-            selected_analysts: List of analyst types to include
+            selected_analysts: List of analyst types to include. None = default for
+                the configured broker (FOREX_ANALYSTS for mt5, otherwise ALL_ANALYSTS).
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
+        if selected_analysts is None:
+            is_forex = self.config.get("execution", {}).get("broker") == "mt5"
+            selected_analysts = list(FOREX_ANALYSTS if is_forex else ALL_ANALYSTS)
         self.callbacks = callbacks or []
 
         # Phase 5: Session ID and storage
@@ -220,6 +240,8 @@ class TradingAgentsGraph:
         # Add callbacks to kwargs if provided (passed to LLM constructor)
         if self.callbacks:
             llm_kwargs["callbacks"] = self.callbacks
+
+        self._check_tool_capable_tiers()
 
         deep_client = create_llm_client(
             provider=self.config.get("deep_think_llm_provider", self.config.get("llm_provider", "anthropic")),
@@ -371,6 +393,8 @@ class TradingAgentsGraph:
             self.risk_manager_memory,
             self.conditional_logic,
             enable_execution_optimizer=self.config.get("enable_execution_optimizer", True),
+            debate_tier=self.config.get("debate_llm_tier", "smart"),
+            analyst_execution=self.config.get("analyst_execution", "parallel"),
         )
 
         self.propagator = Propagator()
@@ -390,10 +414,25 @@ class TradingAgentsGraph:
         # Set up the graph
         self.graph = self.graph_setup.setup_graph(selected_analysts)
 
+    def _check_tool_capable_tiers(self) -> None:
+        """Fail at startup, not mid-analysis: Ollama's deepseek-r1 cannot do tool calls,
+        and the smart and fast tiers run the analysts that bind tools."""
+        for tier in ("smart", "fast"):
+            provider = self.config.get(f"{tier}_think_llm_provider", self.config.get("llm_provider", "")).lower()
+            model = self.config.get(f"{tier}_think_llm", "")
+            if provider == "ollama" and "deepseek-r1" in model.lower():
+                raise ValueError(
+                    f"{tier}_think_llm={model!r}: deepseek-r1 has no tool-calling in Ollama; "
+                    "use it only for deep_think_llm."
+                )
+
     def _get_provider_kwargs(self) -> Dict[str, Any]:
         """Get provider-specific kwargs for LLM client creation."""
         kwargs = {}
         provider = self.config.get("llm_provider", "").lower()
+
+        if provider == "ollama" and self.config.get("llm_timeout"):
+            kwargs["timeout"] = self.config["llm_timeout"]  # r1 thinks for a long time
 
         if provider == "google":
             thinking_level = self.config.get("google_thinking_level")
@@ -421,6 +460,22 @@ class TradingAgentsGraph:
         # trader prompt always hardcoded 'isolated' regardless of it.
         margin_type = exec_cfg.get("margin_type", "isolated")
         other_margin_type = "cross" if margin_type == "isolated" else "isolated"
+
+        if exec_cfg.get("broker") == "mt5":
+            return (
+                "⚙️ SYSTEM RULE — FOREX (MT5 MARGIN ACCOUNT) MODE ACTIVE\n"
+                "You are trading spot forex/CFDs on a MetaTrader 5 margin account.\n"
+                "• You CAN open LONG or SHORT positions.\n"
+                f"• Leverage is set at the account level; never plan above {max_leverage}x. "
+                "Higher leverage → smaller quantity_pct.\n"
+                "• Order size is converted to broker lots (volume step / minimum lot apply); "
+                "a size below the minimum lot is rejected.\n"
+                "• There are no funding rates or on-chain data; weigh spread, swap (overnight "
+                "financing), and session liquidity (London / New York overlap).\n"
+                "• The market is closed from Friday 22:00 to Sunday 22:00 UTC: avoid opening "
+                "positions near the weekend close.\n"
+                "• Always define a stop-loss; protective stops live on the broker."
+            )
 
         if market_type == "future":
             return (

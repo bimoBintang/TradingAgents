@@ -91,8 +91,9 @@ def _run_vision_llm(image_b64: str, ticker: str, timeframe: str) -> Optional[Dic
         from tradingagents.llm_clients import create_llm_client
         from langchain_core.messages import HumanMessage
 
-        provider = DEFAULT_CONFIG.get("smart_think_llm_provider", DEFAULT_CONFIG.get("llm_provider", "anthropic"))
-        model = DEFAULT_CONFIG.get("smart_think_llm", "claude-sonnet-4-6")
+        provider = DEFAULT_CONFIG.get("vision_llm_provider") or DEFAULT_CONFIG.get(
+            "smart_think_llm_provider", DEFAULT_CONFIG.get("llm_provider", "anthropic"))
+        model = DEFAULT_CONFIG.get("vision_llm") or DEFAULT_CONFIG.get("smart_think_llm", "claude-sonnet-4-6")
         client = create_llm_client(provider=provider, model=model)
         llm = client.get_llm()
 
@@ -111,8 +112,32 @@ def _run_vision_llm(image_b64: str, ticker: str, timeframe: str) -> Optional[Dic
         return parsed
 
     except Exception as e:
-        logger.warning("[ChartVisionAgent] Vision LLM call failed: %s", e)
+        logger.warning("[ChartVisionAgent] Vision LLM call failed (model must accept images): %s", e)
         return None
+
+
+_TREND_FROM_REC = {"STRONG_BUY": "BULLISH", "BUY": "BULLISH", "NEUTRAL": "SIDEWAYS",
+                   "SELL": "BEARISH", "STRONG_SELL": "BEARISH"}
+
+
+def _quant_report(ticker, timeframe, screenshot_res, chart_info, reason):
+    """Indicator-based report when no image can be analysed, or None if there is no TA data either.
+
+    Only fields derivable from indicators are filled; pattern/levels/confidence need a real image.
+    """
+    rec = screenshot_res.get("recommendation") or chart_info.get("recommendation")
+    indicators = screenshot_res.get("indicators") or {}
+    if not rec and not any(v is not None for v in indicators.values()):
+        return None
+    return {
+        "ticker": ticker, "timeframe": timeframe,
+        "primary_trend": _TREND_FROM_REC.get(str(rec).upper()),
+        "chart_pattern": None, "key_support": None, "key_resistance": None,
+        "visual_confidence": None,
+        "recommendation": rec, "indicators": indicators,
+        "mode": "FALLBACK_QUANTITATIVE_TA",
+        "rationale": f"{reason} Trend is derived from quantitative indicators, not from a chart image.",
+    }
 
 
 async def chart_vision_agent_handler(state, bus, tools, **kwargs) -> Dict[str, Any]:
@@ -165,19 +190,16 @@ async def chart_vision_agent_handler(state, bus, tools, **kwargs) -> Dict[str, A
                 "rationale": vision_result.get("rationale", ""),
             }
         else:
-            report = _unavailable_report(
-                ticker, timeframe,
-                "A chart screenshot was available but the vision-LLM analysis failed "
-                "(see server logs — commonly a missing/invalid API key). No trend/pattern "
-                "is reported rather than guessing.",
-            )
+            reason = ("A chart screenshot was available but the vision-LLM analysis failed "
+                      "(see server logs — commonly a missing/invalid key or a model without image input).")
+            report = _quant_report(ticker, timeframe, screenshot_res, chart_info, reason) or _unavailable_report(
+                ticker, timeframe, reason + " No trend/pattern is reported rather than guessing.")
     else:
-        report = _unavailable_report(
+        reason = ("No chart screenshot available (TradingView Desktop CDP not connected, and no "
+                  "client-side chart screenshot was supplied).")
+        report = _quant_report(ticker, timeframe, screenshot_res, chart_info, reason) or _unavailable_report(
             ticker, timeframe,
-            "No chart screenshot available (TradingView Desktop CDP not connected, and no "
-            "client-side chart screenshot was supplied). Quantitative TA (RSI/MACD/EMA/SMA) "
-            "is still available separately — this card specifically needs a real image to analyze.",
-        )
+            reason + " No quantitative TA data was available either, so nothing is reported.")
 
     # Store analysis in StateManager for RiskManager & TraderAgent access
     state.set("analysis", "chart_vision_report", report, writer="chart_vision_agent")

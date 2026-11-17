@@ -57,8 +57,9 @@ def _fetch_ohlcv(ticker: str, interval: str, period: int, _ttl_key: int):
     else:
         yf_period = "2y"
 
+    from tradingagents.dataflows.symbols import yf_symbol
     df = yf.download(
-        ticker,
+        yf_symbol(ticker),
         period=yf_period,
         interval=interval,
         progress=False,

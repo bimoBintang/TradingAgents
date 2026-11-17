@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 _ICT_LOOKBACK_BARS = 250
 
 
+def _fetch_ohlc_forex(ticker: str, timeframe: str) -> Optional[Dict[str, list]]:
+    """Real forex candles from yfinance (no volume; ICT geometry does not need it)."""
+    import yfinance as yf
+    from tradingagents.dataflows.symbols import yf_symbol
+    df = yf.Ticker(yf_symbol(ticker)).history(period="30d", interval=timeframe)
+    df = df.dropna()
+    if len(df) < 15:
+        return None
+    return {
+        "closes": [float(x) for x in df["Close"]],
+        "opens": [float(x) for x in df["Open"]],
+        "highs": [float(x) for x in df["High"]],
+        "lows": [float(x) for x in df["Low"]],
+    }
+
+
 def _fetch_ohlc(ticker: str, timeframe: str) -> Optional[Dict[str, list]]:
     """Fetch REAL OHLC candles for ICT analysis.
 
@@ -33,6 +49,9 @@ def _fetch_ohlc(ticker: str, timeframe: str) -> Optional[Dict[str, list]]:
     data_quality rather than pretending the read is valid.
     """
     try:
+        from tradingagents.dataflows.symbols import asset_class
+        if asset_class(ticker) == "forex":
+            return _fetch_ohlc_forex(ticker, timeframe)
         from tradingagents.dataflows.ccxt_ohlcv import fetch_ohlcv
         candles = fetch_ohlcv("binance", ticker, timeframe=timeframe, limit=_ICT_LOOKBACK_BARS)
         if candles and len(candles) >= 15:

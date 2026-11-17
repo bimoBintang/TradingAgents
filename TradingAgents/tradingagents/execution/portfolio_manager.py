@@ -199,7 +199,8 @@ class PortfolioManager:
 
         # Calculate P&L
         pnl = position.unrealized_pnl
-        proceeds = position.quantity * exit_price
+        # cost basis + pnl: equals qty*exit for a long and is also right for a short
+        proceeds = position.entry_price * position.quantity + pnl
 
         # Return cash + P&L
         self.cash_balance += proceeds

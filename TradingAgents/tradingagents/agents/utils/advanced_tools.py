@@ -294,7 +294,8 @@ def get_peer_data(
     import yfinance as yf
 
     peer_list = [p.strip() for p in peers.split(",") if p.strip()]
-    all_tickers = [symbol] + peer_list
+    from tradingagents.dataflows.symbols import yf_symbol
+    all_tickers = [yf_symbol(t) for t in [symbol] + peer_list]
 
     data = yf.download(all_tickers, start=start_date, end=end_date, progress=False)
     if data.empty:

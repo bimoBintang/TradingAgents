@@ -11,15 +11,12 @@ Cara pakai (uji lokal dengan MCP Inspector):
     uv run mcp dev mcp_server/server.py
 
 Cara pakai (stdio — default, untuk didaftarkan di Claude Desktop/Code
-lokal, satu user per proses, lihat context.py):
+lokal, selalu sebagai pemilik tunggal, lihat context.py):
     uv run python -m mcp_server.server
 
-Cara pakai (streamable-http — Fase 4, untuk akses remote/multi-user,
-tiap request diautentikasi lewat Clerk bearer token — lihat auth.py):
+Cara pakai (streamable-http, TANPA autentikasi — jangan buka ke jaringan luar):
     MCP_TRANSPORT=streamable-http uv run python -m mcp_server.server
-    # opsional: MCP_HTTP_HOST, MCP_HTTP_PORT (default 127.0.0.1:8765),
-    # MCP_HTTP_PUBLIC_URL (base URL publik kalau di-proxy/tunnel),
-    # CLERK_ISSUER_URL (default diturunkan dari CLERK_JWKS_URL)
+    # opsional: MCP_HTTP_HOST, MCP_HTTP_PORT (default 127.0.0.1:8765)
 """
 
 from __future__ import annotations
@@ -57,6 +54,14 @@ from mcp_server.tools_trading import (
     approve_pending_order,
     reject_pending_order,
 )
+from mcp_server.tools_autopilot import (
+    get_autopilot_status,
+    start_autopilot,
+    pause_autopilot,
+    resume_autopilot,
+    set_watchlist,
+    list_ai_decisions,
+)
 from mcp_server.tools_chart import (
     get_chart_state,
     set_chart_view,
@@ -67,39 +72,19 @@ from mcp_server.tools_chart import (
 
 logger = logging.getLogger("mcp_server")
 
-# ── Transport & auth (Fase 4) ──────────────────────────────────────────
+# ── Transport ──────────────────────────────────────────────────────────
 #
-# stdio (default): no network exposure, one local user, identity fixed
-# via context.py's config/env fallback chain — no auth needed since
-# only the person who started the process can talk to it (stdin/stdout).
-#
-# streamable-http (opt-in): exposes the server over the network, so it
-# MUST authenticate each request. Wired to Clerk — the same identity
-# provider the dashboard already uses — via mcp_server/auth.py, reusing
-# api/auth.py's JWT verification rather than reimplementing it.
+# stdio (default): no network exposure. streamable-http (opt-in) has NO
+# authentication; keep it bound to localhost / a private network.
 MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
 MCP_HTTP_HOST = os.getenv("MCP_HTTP_HOST", "127.0.0.1")
 MCP_HTTP_PORT = int(os.getenv("MCP_HTTP_PORT", "8765"))
-MCP_HTTP_PUBLIC_URL = os.getenv("MCP_HTTP_PUBLIC_URL", f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}")
 
 _server_kwargs: dict = {}
 if MCP_TRANSPORT == "streamable-http":
-    from mcp.server.auth.settings import AuthSettings
-    from mcp_server.auth import ClerkTokenVerifier
-
-    clerk_jwks_url = os.getenv(
-        "CLERK_JWKS_URL", "https://unbiased-marten-28.clerk.accounts.dev/.well-known/jwks.json"
-    )
-    clerk_issuer_url = os.getenv("CLERK_ISSUER_URL", clerk_jwks_url.removesuffix("/.well-known/jwks.json"))
-
-    _server_kwargs["token_verifier"] = ClerkTokenVerifier()
-    _server_kwargs["auth"] = AuthSettings(
-        issuer_url=clerk_issuer_url,
-        resource_server_url=MCP_HTTP_PUBLIC_URL,
-    )
-    logger.info(
-        "MCP server auth ENABLED (streamable-http): issuer=%s resource=%s",
-        clerk_issuer_url, MCP_HTTP_PUBLIC_URL,
+    logger.warning(
+        "MCP streamable-http has NO authentication; listening on %s:%s. "
+        "Do not expose it to untrusted networks.", MCP_HTTP_HOST, MCP_HTTP_PORT,
     )
 
 mcp = MCPServer(
@@ -109,9 +94,8 @@ mcp = MCPServer(
         "Tools from the TradingAgents multi-agent trading framework: "
         "read-only market data (OHLCV prices, technical indicators, "
         "fundamentals, news), portfolio/trade history, and the "
-        "multi-agent analysis pipeline. In stdio mode acts as a single "
-        "configured user; in streamable-http mode, as whoever's Clerk "
-        "token authenticated the request — see mcp_server/context.py."
+        "multi-agent analysis pipeline. Always acts as the single owner "
+        "(see mcp_server/context.py)."
     ),
     version="0.5.0",
     **_server_kwargs,
@@ -161,7 +145,8 @@ _register_langchain_tools()
 # and only ever queues an order; approve_pending_order() is the sole
 # path that can submit one, gated on an explicit idempotency_key.
 # Genuinely read-only: no DB writes, no side effects.
-_READ_ONLY_TOOLS = [read_portfolio, list_recent_trades, list_pending_orders, get_chart_state]
+_READ_ONLY_TOOLS = [read_portfolio, list_recent_trades, list_pending_orders, get_chart_state,
+                    get_autopilot_status, list_ai_decisions]
 # Writes an analysis/task record (and, for propose_trade, a queued
 # PendingOrder) but never a broker order — not read-only, but not
 # destructive either since nothing irreversible happens to the account.
@@ -171,12 +156,14 @@ _READ_ONLY_TOOLS = [read_portfolio, list_recent_trades, list_pending_orders, get
 # tools_chart.py's module docstring for the scope boundary.
 _NON_DESTRUCTIVE_WRITE_TOOLS = [
     run_analysis, propose_trade,
+    pause_autopilot, resume_autopilot, set_watchlist,
     set_chart_view, annotate_chart_patterns, highlight_price_level, clear_ai_highlights,
 ]
 # Can cause a real broker order (or reverse a proposal) — see the
 # safety contract in tools_trading.py's module docstring.
 _GUARDED_WRITE_TOOLS = [
     (approve_pending_order, ToolAnnotations(destructive_hint=True, idempotent_hint=True, open_world_hint=True)),
+    (start_autopilot, ToolAnnotations(destructive_hint=True, idempotent_hint=False, open_world_hint=True)),
     (reject_pending_order, ToolAnnotations(destructive_hint=False, idempotent_hint=True, open_world_hint=False)),
 ]
 

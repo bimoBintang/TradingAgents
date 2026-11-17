@@ -5,7 +5,7 @@ user's portfolio from the database.  Used by portfolio, journal, and
 analysis routers to enforce data isolation.
 
 Also provides `get_user_config()` and `save_user_config()` for per-user
-configuration isolation (multi-tenant SaaS).
+configuration storage.
 """
 
 import copy
@@ -86,7 +86,13 @@ def get_user_config(db: Session, user_id: int) -> dict:
     has_api_secret = bool(exec_block.get("api_secret"))
     has_exchange = bool(exec_block.get("exchange"))
 
-    if has_api_key and has_api_secret and has_exchange:
+    # MT5 (forex): one account, credentials come from the server env rather
+    # than per-user keys, so the key/secret/exchange check below does not apply.
+    from tradingagents.execution.brokers.mt5_broker import mt5_env_configured
+
+    if exec_block.get("broker") == "mt5" and mt5_env_configured():
+        exec_block["mode"] = "live"
+    elif has_api_key and has_api_secret and has_exchange:
         # User sudah mengisi kredensial → upgrade ke live
         if exec_block.get("broker") == "paper":
             exec_block["broker"] = "ccxt"

@@ -96,6 +96,10 @@ class AgentState(MessagesState):
     user_id: Annotated[int, "Authenticated user ID for tenant isolation"]
     user_config: Annotated[dict, "User-specific runtime configuration loaded from database"]
 
+    # Plain (non-LLM-tool) analysts: ICT smart money, ChartVision
+    ict_report: Annotated[str, "Report from the ICT Smart Money analyst"]
+    chart_vision_report: Annotated[str, "Report from the ChartVision analyst"]
+
     # Phase 15: Analyst Synthesizer
     synthesizer_report: Annotated[str, "Unified briefing of all analyst reports"]
 

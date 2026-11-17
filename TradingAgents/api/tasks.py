@@ -67,7 +67,8 @@ def _persist_pending_orders(db, user_id: int, task_id: str, graph, user_config: 
     return written
 
 
-def _do_analysis(task_id: str, user_id: int, ticker: str, trade_date: str, auto_execute: bool):
+def _do_analysis(task_id: str, user_id: int, ticker: str, trade_date: str, auto_execute: bool,
+                 force_confirmation: bool = False):
     """Core analysis logic — shared by Celery task and thread fallback.
 
     Updates TaskResult in the database with status and results.
@@ -94,6 +95,11 @@ def _do_analysis(task_id: str, user_id: int, ticker: str, trade_date: str, auto_
             graph = init_graph(config=user_config)
             if graph is None:
                 raise RuntimeError("TradingAgentsGraph not available")
+
+            # Set on the graph that actually runs this analysis (not a shared singleton), so
+            # "propose only" callers (MCP) can never end up auto-executing live.
+            if force_confirmation:
+                graph.execution_engine.require_confirmation = True
 
             final_state, decision, order_result = graph.propagate(
                 ticker, trade_date, auto_execute=auto_execute
@@ -219,12 +225,13 @@ except ImportError:
 
 # ── Thread fallback ───────────────────────────────────────────────────
 
-def run_analysis_thread(task_id: str, user_id: int, ticker: str, trade_date: str, auto_execute: bool):
+def run_analysis_thread(task_id: str, user_id: int, ticker: str, trade_date: str, auto_execute: bool,
+                        force_confirmation: bool = False):
     """Thread-based fallback when Celery is not available."""
     import threading
     thread = threading.Thread(
         target=_do_analysis,
-        args=(task_id, user_id, ticker, trade_date, auto_execute),
+        args=(task_id, user_id, ticker, trade_date, auto_execute, force_confirmation),
         daemon=True,
     )
     thread.start()

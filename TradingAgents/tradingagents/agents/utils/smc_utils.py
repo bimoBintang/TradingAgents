@@ -39,8 +39,9 @@ class VolumeProfileResult:
 
 def download_ohlcv(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
     """Download OHLCV data from yfinance with MultiIndex and NaN handling."""
+    from tradingagents.dataflows.symbols import yf_symbol
     df = yf.download(
-        symbol,
+        yf_symbol(symbol),
         start=start_date,
         end=end_date,
         progress=False,

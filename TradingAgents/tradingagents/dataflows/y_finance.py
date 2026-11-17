@@ -30,11 +30,12 @@ def get_YFin_data_online(
     if data.index.tz is not None:
         data.index = data.index.tz_localize(None)
 
-    # Round numerical values to 2 decimal places for cleaner display
+    # 2 decimals for stocks/crypto; forex ("...=X") moves in pips (4th-5th decimal), so keep 5
+    decimals = 5 if symbol.upper().endswith("=X") else 2
     numeric_columns = ["Open", "High", "Low", "Close", "Adj Close"]
     for col in numeric_columns:
         if col in data.columns:
-            data[col] = data[col].round(2)
+            data[col] = data[col].round(decimals)
 
     # Convert DataFrame to CSV string
     csv_string = data.to_csv()

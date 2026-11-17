@@ -1,24 +1,18 @@
-"""Trading MCP tools — Fase 3: propose, list, approve, reject orders.
+"""Trading MCP tools: propose, list, approve, reject orders.
 
 SAFETY CONTRACT (do not weaken this without a very deliberate reason):
 
-  - `propose_trade()` runs the analysis pipeline and, if the agents
-    decide to trade, ALWAYS lands in the pending-order queue for
-    human approval — it never places a live order itself, regardless
-    of how `execution.require_confirmation` is configured in the
-    dashboard. See the force-confirmation comment below.
+  - `propose_trade()` runs the analysis pipeline and, if the agents decide to trade, ALWAYS
+    lands in the pending-order queue for human approval. It passes force_confirmation=True to
+    the analysis task, which sets require_confirmation on the graph that actually runs, so it
+    never places a live order regardless of `execution.require_confirmation` in the config.
 
-  - `approve_pending_order()` is the ONLY tool in this file that can
-    cause a real broker order. It requires an explicit
-    `idempotency_key` the caller must already have (from
-    `propose_trade`/`list_pending_orders`'s output) — an LLM should
-    only call it after a human has explicitly said to approve that
-    specific order, never speculatively.
+  - `approve_pending_order()` is the ONLY tool here that can cause a real broker order. It
+    requires an explicit `idempotency_key` the caller must already have. An LLM should only call
+    it after a human has explicitly said to approve that specific order.
 
-  - Every write here goes through the exact same ExecutionEngine /
-    PendingOrder DB code path as api/routers/pending.py, so the
-    dashboard's Pending Orders panel and this MCP server always agree
-    on what's queued.
+  - Approve/reject use api/services/pending_orders.py: the same atomic claim, per-owner graph
+    and engine re-validation as the dashboard, so both always agree on what is queued.
 """
 
 from __future__ import annotations
@@ -26,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import uuid4
 
 from api.models import PendingOrder, TaskResult
@@ -36,12 +30,6 @@ logger = logging.getLogger("mcp_server.tools_trading")
 
 _ANALYSIS_TIMEOUT_SECONDS = 180
 _ANALYSIS_POLL_INTERVAL_SECONDS = 2
-
-
-def _get_graph():
-    from api.dependencies import get_graph_optional, init_graph
-
-    return get_graph_optional() or init_graph()
 
 
 def _format_pending(p: dict | PendingOrder) -> str:
@@ -66,19 +54,13 @@ def _format_pending(p: dict | PendingOrder) -> str:
 
 
 def list_pending_orders() -> str:
-    """List trade orders awaiting human approval in the dashboard.
+    """List trade orders awaiting approval (the same queue the dashboard shows).
 
-    Combines the execution engine's in-memory queue (orders proposed in
-    this MCP server session) with any orders persisted to the database
-    (e.g. proposed earlier via the dashboard). Each order has an
-    idempotency_key needed by approve_pending_order/reject_pending_order.
+    Each order has an idempotency_key needed by approve_pending_order/reject_pending_order.
 
     Returns:
         str: A formatted list of pending orders, or a message if none.
     """
-    graph = _get_graph()
-    engine_orders = graph.execution_engine.get_pending_orders() if graph and graph.execution_engine else []
-
     with db_session() as db:
         user = resolve_mcp_user(db)
         db_orders = (
@@ -87,10 +69,7 @@ def list_pending_orders() -> str:
             .order_by(PendingOrder.created_at.desc())
             .all()
         )
-
-    seen = {o.get("idempotency_key") for o in engine_orders}
-    rows = [_format_pending(o) for o in engine_orders]
-    rows += [_format_pending(o) for o in db_orders if o.idempotency_key not in seen]
+        rows = [_format_pending(o) for o in db_orders]
 
     if not rows:
         return "No pending orders awaiting approval."
@@ -117,23 +96,6 @@ def propose_trade(ticker: str, trade_date: str | None = None) -> str:
     """
     from api.tasks import run_analysis_thread
 
-    graph = _get_graph()
-    if graph is None:
-        return (
-            "TradingAgentsGraph is not available — the server is running in "
-            "degraded mode (check LLM API keys in .env). Cannot propose a trade."
-        )
-    if graph.execution_engine is None:
-        return "Execution engine is not configured (check execution settings). Cannot propose a trade."
-
-    # Force manual confirmation for THIS MCP server's graph instance,
-    # regardless of the dashboard's `execution.require_confirmation`
-    # setting. The MCP server runs its own process-local graph (see
-    # api/dependencies.py's init_graph()) separate from the dashboard
-    # backend's, so this only affects trades proposed through this MCP
-    # server — it never weakens the dashboard's own configuration.
-    graph.execution_engine.require_confirmation = True
-
     ticker = ticker.upper().strip()
     trade_date = trade_date or datetime.now().strftime("%Y-%m-%d")
 
@@ -145,10 +107,9 @@ def propose_trade(ticker: str, trade_date: str | None = None) -> str:
         db.add(task_row)
         db.commit()
 
-        # auto_execute=True lets the pipeline propose a trade — but
-        # thanks to require_confirmation=True above, "propose" is as
-        # far as it can go without a separate approve_pending_order() call.
-        run_analysis_thread(task_id, user.id, ticker, trade_date, auto_execute=True)
+        # auto_execute=True lets the pipeline propose a trade; force_confirmation=True makes
+        # "propose" as far as it can go without a separate approve_pending_order() call.
+        run_analysis_thread(task_id, user.id, ticker, trade_date, auto_execute=True, force_confirmation=True)
 
         deadline = time.monotonic() + _ANALYSIS_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -197,83 +158,47 @@ def propose_trade(ticker: str, trade_date: str | None = None) -> str:
 
 
 def approve_pending_order(idempotency_key: str) -> str:
-    """Approve a specific pending order — sends it to the broker for execution.
+    """Approve a specific pending order: sends it to the broker for execution.
 
-    ⚠️ This places a REAL order (or a paper-trading order, depending on
-    the dashboard's execution mode). Only call this after a human has
-    explicitly confirmed they want THIS specific order approved — never
-    speculatively or as part of an automated chain.
+    ⚠️ This places a REAL order (or a paper-trading order, depending on the execution mode).
+    Only call this after a human has explicitly confirmed they want THIS specific order approved,
+    never speculatively or as part of an automated chain. Every safety check (kill switch, risk
+    limits, fresh price, order flow, stop placement) is re-run before anything is sent.
 
     Args:
         idempotency_key: The exact key from list_pending_orders/propose_trade's output.
 
     Returns:
-        str: The execution result, or an error if the order wasn't found.
+        str: The execution result, or why it was not executed.
     """
-    graph = _get_graph()
-    if not graph or not graph.execution_engine:
-        return "Execution engine not available."
-
-    result = graph.execution_engine.approve_pending_order(idempotency_key)
+    from api.services import pending_orders
 
     with db_session() as db:
         user = resolve_mcp_user(db)
-        db_order = (
-            db.query(PendingOrder)
-            .filter(PendingOrder.idempotency_key == idempotency_key, PendingOrder.user_id == user.id)
-            .first()
-        )
-        if db_order:
-            db_order.status = "APPROVED"
-            db_order.resolved_at = datetime.now(timezone.utc)
-            if result:
-                db_order.order_result_json = json.dumps({
-                    "order_id": result.order_id,
-                    "status": result.status.value if hasattr(result.status, "value") else str(result.status),
-                    "filled_quantity": result.filled_quantity,
-                    "filled_price": result.filled_price,
-                }, default=str)
-            db.commit()
-
-    if not result:
-        return f"Order {idempotency_key} not found in the pending queue (already resolved, or expired)."
-
-    status = result.status.value if hasattr(result.status, "value") else str(result.status)
-    return (
-        f"Order {idempotency_key} approved and submitted.\n"
-        f"Status: {status}\n"
-        f"Filled: {result.filled_quantity} @ ${result.filled_price}\n"
-        f"Order ID: {result.order_id}"
-    )
+        try:
+            res = pending_orders.approve(db, user.id, idempotency_key)
+        except pending_orders.PendingOrderError as e:
+            return f"Order {idempotency_key}: {e.detail}"
+    if res.success:
+        return f"Order {idempotency_key} approved and submitted.\n{res.message}\nOrder ID: {res.order_id}"
+    return f"Order {idempotency_key} was NOT executed ({res.status}): {res.message}"
 
 
 def reject_pending_order(idempotency_key: str) -> str:
-    """Reject a pending order — removes it from the queue without executing it.
+    """Reject a pending order: marks it resolved without executing it.
 
     Args:
         idempotency_key: The exact key from list_pending_orders/propose_trade's output.
 
     Returns:
-        str: Confirmation, or an error if the order wasn't found.
+        str: Confirmation, or why it could not be rejected.
     """
-    graph = _get_graph()
-    if not graph or not graph.execution_engine:
-        return "Execution engine not available."
-
-    success = graph.execution_engine.reject_pending_order(idempotency_key)
+    from api.services import pending_orders
 
     with db_session() as db:
         user = resolve_mcp_user(db)
-        db_order = (
-            db.query(PendingOrder)
-            .filter(PendingOrder.idempotency_key == idempotency_key, PendingOrder.user_id == user.id)
-            .first()
-        )
-        if db_order:
-            db_order.status = "REJECTED"
-            db_order.resolved_at = datetime.now(timezone.utc)
-            db.commit()
-
-    if success or db_order:
-        return f"Order {idempotency_key} rejected."
-    return f"Order {idempotency_key} not found in the pending queue."
+        try:
+            res = pending_orders.reject(db, user.id, idempotency_key)
+        except pending_orders.PendingOrderError as e:
+            return f"Order {idempotency_key}: {e.detail}"
+    return res.message if res.success else f"Order {idempotency_key} not rejected ({res.status}): {res.message}"

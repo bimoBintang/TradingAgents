@@ -95,29 +95,34 @@ def test_manage_alert_execution(mcp_client):
     assert "status" in res
 
 
-def test_chart_vision_agent_execution():
-    """Test ChartVisionAgent handler integration with Orchestrator.
-
-    Previously this asserted primary_trend was always one of
-    BULLISH/BEARISH/SIDEWAYS — that was testing a hardcoded lookup table
-    that fabricated a trend from the SAME quantitative TA numbers already
-    shown elsewhere, regardless of whether any actual chart image was
-    ever analyzed. With no CDP running and no client-side fallback
-    screenshot supplied (the case here), there's no image to analyze, so
-    mode="UNAVAILABLE" with primary_trend=None is the honest, correct
-    result — not a guess dressed up as a vision analysis.
-    """
+def _run_cv(monkeypatch, shot):
     from orchestrator.sdk import create_trading_orchestrator, chart_vision_agent_handler
     orch = create_trading_orchestrator(ticker="BTCUSDT", topology="pipeline")
-    report = asyncio.run(chart_vision_agent_handler(orch.state, orch.bus, orch.tools))
+    orig = orch.tools.get_for_agent
 
-    assert report["ticker"] == "BTCUSDT"
-    assert report["mode"] == "UNAVAILABLE"
-    assert report["primary_trend"] is None
-    assert "visual_confidence" in report
-    # Check that report is stored in StateManager
-    state_report = orch.state.get("analysis", "chart_vision_report")
-    assert state_report["primary_trend"] == report["primary_trend"]
+    def patched(**kw):
+        tools = dict(orig(**kw))
+        tools["tv_take_screenshot"] = lambda **k: shot
+        tools["tv_get_chart_info"] = lambda **k: {}
+        return tools
+    monkeypatch.setattr(orch.tools, "get_for_agent", patched)
+    return orch, asyncio.run(chart_vision_agent_handler(orch.state, orch.bus, orch.tools))
+
+
+def test_chart_vision_falls_back_to_quantitative(monkeypatch):
+    """No image but TA data: indicator-based report; image-only fields stay None."""
+    orch, report = _run_cv(monkeypatch, {"image_b64": None, "recommendation": "BUY",
+                                         "indicators": {"RSI": 61.0}})
+    assert report["mode"] == "FALLBACK_QUANTITATIVE_TA"
+    assert report["primary_trend"] == "BULLISH"
+    assert report["chart_pattern"] is None and report["key_support"] is None
+    assert orch.state.get("analysis", "chart_vision_report")["primary_trend"] == "BULLISH"
+
+
+def test_chart_vision_unavailable_without_any_data(monkeypatch):
+    """No image and no TA data: honest UNAVAILABLE, nothing invented."""
+    _, report = _run_cv(monkeypatch, {"image_b64": None})
+    assert report["mode"] == "UNAVAILABLE" and report["primary_trend"] is None
 
 
 def test_mcp_mid_execution_fallback_switch(mcp_client):

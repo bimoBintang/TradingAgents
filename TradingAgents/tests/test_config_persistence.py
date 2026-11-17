@@ -11,7 +11,7 @@ split accordingly:
    /api/config/reset`), which requires an authenticated user and persists
    to that user's `UserConfig` DB row (`api/user_context.py`), NOT to any
    file. `test_user` below overrides auth so these can be exercised over
-   HTTP without a real Clerk JWT.
+   HTTP with a fixed test user.
 """
 
 import os

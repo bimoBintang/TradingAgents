@@ -35,6 +35,31 @@ def _get_scheduler_class():
     return _APScheduler
 
 
+def is_market_open(ticker: str, sched_cfg: Optional[dict] = None, now: Optional[datetime] = None) -> bool:
+    """Whether the market for `ticker` is open (forex / crypto / US-stock hours).
+
+    shortcut: stock hours use a fixed UTC-5 offset (no DST, no holidays).
+    """
+    cfg = sched_cfg or {}
+    if not cfg.get("market_hours_only", True):
+        return True
+
+    from tradingagents.dataflows.symbols import asset_class, forex_market_open
+    kind = asset_class(ticker)
+    if kind == "forex":
+        return forex_market_open(now)
+
+    is_crypto = kind == "crypto" or "/" in ticker or ticker.endswith("USDT") or ticker.endswith("USD")
+    if is_crypto and cfg.get("crypto_24_7", True):
+        return True
+
+    now = now.replace(tzinfo=None) if now is not None else datetime.utcnow()
+    if now.weekday() >= 5:  # Saturday/Sunday (UTC)
+        return False
+    est_hour = (now.hour - 5) % 24
+    return cfg.get("market_open_hour", 9) <= est_hour < cfg.get("market_close_hour", 16)
+
+
 class TradingScheduler:
     """Autonomous trading scheduler.
 
@@ -250,31 +275,13 @@ class TradingScheduler:
     # ── Market Hours ──────────────────────────────────────────────────
 
     def _is_market_open(self, ticker: str) -> bool:
-        """Check if the market is currently open for this ticker.
-
-        Args:
-            ticker: Ticker symbol
-
-        Returns:
-            True if market is open
-        """
-        if not self.market_hours_only:
-            return True
-
-        # Crypto is 24/7
-        is_crypto = "/" in ticker or ticker.endswith("USDT") or ticker.endswith("USD")
-        if is_crypto and self.crypto_24_7:
-            return True
-
-        now = datetime.utcnow()
-
-        # Skip weekends (UTC) — approximate for US stocks
-        if now.weekday() >= 5:  # Saturday=5, Sunday=6
-            return False
-
-        # EST = UTC - 5 (approximate, ignores DST)
-        est_hour = (now.hour - 5) % 24
-        return self.market_open_hour <= est_hour < self.market_close_hour
+        """True if the market is currently open for this ticker."""
+        return is_market_open(ticker, {
+            "market_hours_only": self.market_hours_only,
+            "crypto_24_7": self.crypto_24_7,
+            "market_open_hour": self.market_open_hour,
+            "market_close_hour": self.market_close_hour,
+        })
 
     # ── Helpers ───────────────────────────────────────────────────────
 

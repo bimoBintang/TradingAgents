@@ -8,7 +8,7 @@ Endpoints:
     ws /ws/chart-control  — bidirectional: dashboard reports chart state,
                             MCP-driven commands (api/chart_control.py) pushed in
 
-Auth: JWT passed via ?token= query parameter.
+No auth: sockets act as the owner.
 """
 
 import asyncio
@@ -19,7 +19,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from fastapi.concurrency import run_in_threadpool
 
 from api import chart_control
-from api.auth import ClerkTokenInvalid, verify_clerk_jwt
 from api.ws_manager import manager
 from api.database import SessionLocal
 from api.models import User, PortfolioState, Position, TaskResult
@@ -35,37 +34,19 @@ OHLCV_PUSH_INTERVAL = 8      # seconds — real-time-feeling, gentle on exchange
 
 # ── Auth helper ───────────────────────────────────────────────────────
 
-async def _authenticate_ws(token: str) -> int | None:
-    """Validate JWT token and return user_id, or None if invalid.
-
-    Reuses api/auth.py's verify_clerk_jwt — this used to carry its own
-    copy of the JWKS-lookup/decode logic (a second one, alongside
-    api/auth.py's and, before Fase 4, a would-be third in
-    mcp_server/auth.py) which had already drifted slightly (no `kty`
-    fallback handling differences aside). One implementation now.
-    """
-    if not token:
-        return None
-    try:
-        clerk_id = verify_clerk_jwt(token)
-    except ClerkTokenInvalid as e:
-        logger.debug("WS auth failed: %s", e)
-        return None
-
+async def _owner_id() -> int:
+    """No login: every socket belongs to the owner (see api/auth.py)."""
+    from api.auth import get_or_create_owner
     with SessionLocal() as db:
-        user = db.query(User).filter(User.clerk_id == clerk_id).first()
-        return user.id if user else None
+        return get_or_create_owner(db).id
 
 
 # ── Portfolio Feed ────────────────────────────────────────────────────
 
 @router.websocket("/ws/portfolio")
-async def ws_portfolio(websocket: WebSocket, token: str = Query("")):
-    """Stream portfolio state to the authenticated user every 5 seconds."""
-    user_id = await _authenticate_ws(token)
-    if user_id is None:
-        await websocket.close(code=4001, reason="Unauthorized")
-        return
+async def ws_portfolio(websocket: WebSocket):
+    """Stream portfolio state to the owner every 5 seconds."""
+    user_id = await _owner_id()
 
     await manager.connect(websocket, user_id)
     try:
@@ -127,12 +108,9 @@ async def ws_portfolio(websocket: WebSocket, token: str = Query("")):
 # more accurate source (the exchange the bot actually trades on).
 
 @router.websocket("/ws/ohlcv/{ticker}")
-async def ws_ohlcv(websocket: WebSocket, ticker: str, timeframe: str = Query("1h"), token: str = Query("")):
+async def ws_ohlcv(websocket: WebSocket, ticker: str, timeframe: str = Query("1h")):
     """Stream live candles for `ticker` from the user's connected exchange."""
-    user_id = await _authenticate_ws(token)
-    if user_id is None:
-        await websocket.close(code=4001, reason="Unauthorized")
-        return
+    user_id = await _owner_id()
 
     from api.user_context import get_user_config
     with SessionLocal() as db:
@@ -184,12 +162,9 @@ async def ws_ohlcv(websocket: WebSocket, ticker: str, timeframe: str = Query("1h
 # ── Analysis Progress ────────────────────────────────────────────────
 
 @router.websocket("/ws/analysis/{task_id}")
-async def ws_analysis(websocket: WebSocket, task_id: str, token: str = Query("")):
+async def ws_analysis(websocket: WebSocket, task_id: str):
     """Stream analysis task progress until completed or failed."""
-    user_id = await _authenticate_ws(token)
-    if user_id is None:
-        await websocket.close(code=4001, reason="Unauthorized")
-        return
+    user_id = await _owner_id()
 
     await manager.connect(websocket, user_id)
     try:
@@ -267,17 +242,14 @@ async def ws_analysis(websocket: WebSocket, task_id: str, token: str = Query("")
 #       REST router) via the same ConnectionManager used above.
 
 @router.websocket("/ws/chart-control")
-async def ws_chart_control(websocket: WebSocket, token: str = Query("")):
+async def ws_chart_control(websocket: WebSocket):
     """Dashboard-side channel for MCP-driven chart control.
 
     Only reports/receives — this endpoint itself never touches the DB
     or a broker; it's ephemeral UI state, not domain data. See
     api/chart_control.py's module docstring for the full picture.
     """
-    user_id = await _authenticate_ws(token)
-    if user_id is None:
-        await websocket.close(code=4001, reason="Unauthorized")
-        return
+    user_id = await _owner_id()
 
     await manager.connect(websocket, user_id)
     try:

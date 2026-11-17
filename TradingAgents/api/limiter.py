@@ -20,17 +20,8 @@ from slowapi.util import get_remote_address
 
 
 def user_or_ip(request) -> str:
-    """Key limits by authenticated account, falling back to IP.
-
-    get_current_user() puts the resolved id on request.state (see
-    api/auth.py). Keying on IP alone is wrong in both directions for a
-    multi-tenant SaaS: an office behind one NAT shares a single quota
-    between unrelated accounts, and one account calling from rotating
-    addresses is effectively unlimited.
-
-    The IP fallback still matters — it covers requests that fail auth or
-    that never had it — so an unauthenticated flood is not free.
-    """
+    """Key limits by the owner id that get_current_user() puts on request.state
+    (api/auth.py); fall back to IP for requests that never reached it."""
     user_id = getattr(request.state, "user_id", None)
     if user_id is not None:
         return f"user:{user_id}"

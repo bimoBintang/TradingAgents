@@ -360,6 +360,29 @@ class CcxtBroker(BaseBroker):
                 broker_name=self.name,
             )
 
+    def list_protective_stops(self, ticker: str) -> List[str]:
+        """Open reduce-only / stop orders for `ticker` at the exchange.
+
+        shortcut: flag names (reduceOnly, stopPrice, type) differ per venue, so
+        this matches any of them; verify against the real exchange before relying on it.
+        """
+        symbol = self._normalize_ticker(ticker)
+        try:
+            orders = self.exchange.fetch_open_orders(symbol)
+        except Exception as e:
+            logger.warning("[CcxtBroker] Could not list open orders for %s: %s", symbol, e)
+            return []
+        ids = []
+        for o in orders:
+            kind = str(o.get("type") or "").lower()
+            if o.get("reduceOnly") or o.get("stopPrice") or o.get("triggerPrice") or "stop" in kind:
+                ids.append(str(o["id"]))
+        return ids
+
+    def cancel_protective_stops(self, ticker: str) -> int:
+        symbol = self._normalize_ticker(ticker)
+        return sum(1 for oid in self.list_protective_stops(ticker) if self.cancel_order(oid, symbol=symbol))
+
     def cancel_order(self, order_id: str, symbol: Optional[str] = None) -> bool:
         """Cancel a pending order on the exchange.
 

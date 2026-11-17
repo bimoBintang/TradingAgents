@@ -7,32 +7,6 @@ from enum import Enum
 
 # ── Request Models ────────────────────────────────────────────────────
 
-class LoginRequest(BaseModel):
-    """POST /api/auth/login body."""
-    email: str = Field(..., description="User email address")
-    password: str = Field(..., description="User password")
-
-
-class RegisterRequest(BaseModel):
-    """POST /api/auth/register body."""
-    email: str = Field(..., description="User email address")
-    password: str = Field(..., min_length=6, description="Password (min 6 chars)")
-    name: str = Field(..., description="Display name")
-
-
-# ── Auth Response Models ─────────────────────────────────────────────
-
-class UserResponse(BaseModel):
-    email: str
-    name: str
-    is_admin: bool = False
-    created_at: str
-
-
-class AuthResponse(BaseModel):
-    user: UserResponse
-
-
 class AnalyzeRequest(BaseModel):
     """POST /api/analyze body."""
     ticker: str = Field(..., description="Ticker symbol, e.g. NVDA")
@@ -54,7 +28,7 @@ class ConfigUpdateRequest(BaseModel):
 class ExecutionConfigUpdate(BaseModel):
     """Validated sub-schema for execution config fields."""
     mode: Optional[str] = Field(None, pattern=r"^(disabled|paper|live)$")
-    broker: Optional[str] = Field(None, pattern=r"^(paper|ccxt|alpaca)$")
+    broker: Optional[str] = Field(None, pattern=r"^(paper|ccxt|alpaca|mt5)$")
     exchange: Optional[str] = None
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
@@ -428,56 +402,6 @@ class PredictionMarketsResponse(BaseModel):
     events: List[PredictionEventItem] = []
     message: str = ""
 
-# ── Admin Global Settings (Phase 16) ───────────────────────────────────
-
-class AdminConfig(BaseModel):
-    maintenance_mode: bool
-    allow_registration: bool
-    global_max_leverage: int
-
-class AdminConfigUpdate(BaseModel):
-    maintenance_mode: Optional[bool] = None
-    allow_registration: Optional[bool] = None
-    global_max_leverage: Optional[int] = None
-
-
-# ── Admin Dashboard Models ────────────────────────────────────────────
-
-class AdminUserItem(BaseModel):
-    id: int
-    email: str
-    name: str
-    is_admin: bool = False
-    created_at: str
-    status: str = "active"
-
-class AdminSystemStats(BaseModel):
-    total_users: int = 0
-    admin_users: int = 0
-    total_trades: int = 0
-    total_platform_volume: float = 0.0
-    total_equity: float = 0.0
-    active_positions: int = 0
-    engine_uptime_seconds: float = 0.0
-
-class AdminRoleUpdate(BaseModel):
-    is_admin: bool
-
-class AdminUserDetailsResponse(BaseModel):
-    id: int
-    email: str
-    name: str
-    is_admin: bool
-    created_at: str
-    portfolio_balance: float = 0.0
-    total_equity: float = 0.0
-    total_pnl: float = 0.0
-    win_rate: float = 0.0
-    total_trades: int = 0
-    max_drawdown_pct: float = 0.0
-    active_positions_count: int = 0
-
-
 # ── Chart Pattern Detection ──────────────────────────────────────────
 
 class PatternPoint(BaseModel):
@@ -539,7 +463,7 @@ class ApproveRejectResponse(BaseModel):
 
 class BrokerTestRequest(BaseModel):
     """Credentials to test-connect a broker/exchange without saving them."""
-    broker: str = "ccxt"                    # paper | ccxt | alpaca
+    broker: str = "ccxt"                    # paper | ccxt | alpaca | mt5
     exchange: Optional[str] = None          # binance, bybit, okx, bitget, ... (ccxt only)
     api_key: str = ""
     api_secret: str = ""

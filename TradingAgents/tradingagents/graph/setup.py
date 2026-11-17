@@ -65,6 +65,8 @@ class GraphSetup:
         risk_manager_memory,
         conditional_logic: ConditionalLogic,
         enable_execution_optimizer: bool = True,
+        debate_tier: str = "smart",
+        analyst_execution: str = "parallel",
     ):
         """Initialize with required components."""
         self.fast_thinking_llm = fast_thinking_llm
@@ -78,6 +80,12 @@ class GraphSetup:
         self.risk_manager_memory = risk_manager_memory
         self.conditional_logic = conditional_logic
         self.enable_execution_optimizer = enable_execution_optimizer
+        self.debate_tier = debate_tier
+        self.analyst_execution = analyst_execution
+
+    def _debate_llm(self):
+        """LLM for Bull, Bear and Trader (the trader emits <TRADE_DECISION>)."""
+        return self.deep_thinking_llm if self.debate_tier == "deep" else self.smart_thinking_llm
 
     def _get_llm_for_analyst(self, analyst_type: str):
         """Return the appropriate LLM for a given analyst type.
@@ -94,6 +102,12 @@ class GraphSetup:
         return self.fast_thinking_llm
 
     # ── Analyst Factory ───────────────────────────────────────────────
+
+    # Non-LLM-tool analysts: plain nodes (no subgraph / ToolNode).
+    SIMPLE_ANALYSTS = {
+        "ict": create_ict_analyst,
+        "chart_vision": create_chart_vision_analyst,
+    }
 
     ANALYST_FACTORIES = {
         "market": create_market_analyst,
@@ -125,6 +139,10 @@ class GraphSetup:
 
         analyst_subgraphs = {}
         for analyst_type in selected_analysts:
+            simple = self.SIMPLE_ANALYSTS.get(analyst_type)
+            if simple:  # plain node, no tool loop
+                analyst_subgraphs[analyst_type] = simple(None)
+                continue
             factory = self.ANALYST_FACTORIES.get(analyst_type)
             if not factory:
                 raise ValueError(f"Unknown analyst type: {analyst_type}")
@@ -146,15 +164,15 @@ class GraphSetup:
         analyst_synthesizer_node = create_analyst_synthesizer(self.deep_thinking_llm)
 
         bull_researcher_node = create_bull_researcher(
-            self.smart_thinking_llm, self.bull_memory
+            self._debate_llm(), self.bull_memory
         )
         bear_researcher_node = create_bear_researcher(
-            self.smart_thinking_llm, self.bear_memory
+            self._debate_llm(), self.bear_memory
         )
         research_manager_node = create_research_manager(
             self.deep_thinking_llm, self.invest_judge_memory
         )
-        trader_node = create_trader(self.smart_thinking_llm, self.trader_memory)
+        trader_node = create_trader(self._debate_llm(), self.trader_memory)
 
         aggressive_analyst = create_aggressive_debator(self.smart_thinking_llm)
         neutral_analyst = create_neutral_debator(self.smart_thinking_llm)
@@ -190,13 +208,19 @@ class GraphSetup:
             for at in selected_analysts
         ]
 
-        # START fans out to ALL analysts simultaneously
-        for name in analyst_display_names:
-            workflow.add_edge(START, name)
+        if self.analyst_execution == "sequential":
+            # One analyst at a time (single-GPU local LLMs): START -> A1 -> A2 -> ... -> Synthesizer
+            chain = [START, *analyst_display_names, "Analyst Synthesizer"]
+            for src, dst in zip(chain, chain[1:]):
+                workflow.add_edge(src, dst)
+        else:
+            # START fans out to ALL analysts simultaneously
+            for name in analyst_display_names:
+                workflow.add_edge(START, name)
 
-        # All analysts fan-in to Analyst Synthesizer
-        for name in analyst_display_names:
-            workflow.add_edge(name, "Analyst Synthesizer")
+            # All analysts fan-in to Analyst Synthesizer
+            for name in analyst_display_names:
+                workflow.add_edge(name, "Analyst Synthesizer")
 
         # Synthesizer to Bull Researcher
         workflow.add_edge("Analyst Synthesizer", "Bull Researcher")

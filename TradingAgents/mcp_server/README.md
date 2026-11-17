@@ -38,18 +38,10 @@ This contract is enforced in code (`tools_trading.py`) and covered by
 `tests/test_mcp_server.py::test_propose_trade_forces_require_confirmation_even_if_disabled` —
 don't weaken either without a very deliberate reason.
 
-## Identity — who is "me"?
+## Identity
 
-The MCP server has no login session of its own, so "which account's
-portfolio am I reading/trading on" is resolved differently per transport:
-
-- **stdio** (default, local, single user): fixed once per process, from
-  (in priority order) the dashboard's Settings > MCP Server field →
-  `TRADINGAGENTS_MCP_USER_EMAIL` in `.env` → the first user in the DB
-  (with a warning). See `context.py`.
-- **streamable-http** (remote, opt-in): resolved **per request** from a
-  verified Clerk bearer token — the same identity provider the
-  dashboard uses. See `auth.py`.
+There is a single owner (see `api/auth.py`); every tool acts as the owner and
+none accepts a user argument. There is no authentication on either transport.
 
 ## Running it
 
@@ -60,16 +52,14 @@ project root's `.mcp.json` for the registered config):
 uv run python -m mcp_server.server
 ```
 
-**streamable-http** — for remote/multi-user access, authenticated:
+**streamable-http** — remote access, **no authentication** (keep it on localhost/a private network):
 
 ```bash
 MCP_TRANSPORT=streamable-http uv run python -m mcp_server.server
-# optional: MCP_HTTP_HOST, MCP_HTTP_PORT (default 127.0.0.1:8765),
-# MCP_HTTP_PUBLIC_URL (public base URL if behind a proxy/tunnel),
-# CLERK_ISSUER_URL (defaults to the CLERK_JWKS_URL host)
+# optional: MCP_HTTP_HOST, MCP_HTTP_PORT (default 127.0.0.1:8765)
 ```
 
-Unauthenticated or invalid-token requests get `401` — verified in
+
 `tests/test_mcp_server.py`.
 
 **MCP Inspector** (interactive manual testing):
@@ -84,8 +74,7 @@ uv run mcp dev mcp_server/server.py
 uv run pytest tests/test_mcp_server.py -v
 ```
 
-Covers: tool registration/annotations, identity resolution priority
-(both transports), the Clerk token verifier, and the `propose_trade`
+Covers: tool registration/annotations, owner resolution and the `propose_trade`
 safety contract above.
 
 ## See also: TradingAgents as an MCP *client*
@@ -97,3 +86,26 @@ a market-data vendor — lives in
 vendor-routing system (`data_vendors`/`tool_vendors` in
 `default_config.py`'s `mcp_client` section, disabled by default). See
 that file's module docstring and `tests/test_mcp_client_vendor.py`.
+
+
+## Autopilot tools
+
+`get_autopilot_status`, `start_autopilot(target_profit_pct, max_loss_pct, end_at)`, `pause_autopilot`, `resume_autopilot`,
+`set_watchlist(tickers)`, `list_ai_decisions(limit)`. They call `api/services/autopilot.py`, the same service the dashboard uses, so
+every client sees one state (stored in the database). `start_autopilot` refuses to run without at least one goal, so the AI does not
+run forever; reaching a goal stops new analyses (open positions keep their stops).
+
+`approve_pending_order` / `reject_pending_order` use `api/services/pending_orders.py`: the same atomic claim and engine re-validation
+as the dashboard. `propose_trade` forces confirmation on the graph that actually runs the analysis.
+
+## Using it from non-MCP clients (mcpo)
+
+`mcpo` exposes this server as REST/OpenAPI (used for Open WebUI + local Ollama models). Tested:
+
+```
+uvx --python 3.11 --with "mcp<2" --with "fastapi<0.125" mcpo --host 127.0.0.1 --port 8100 \
+    --server-type streamable-http -- http://127.0.0.1:8765/mcp
+```
+
+`--host 127.0.0.1` is required (mcpo defaults to 0.0.0.0; this server has no authentication). The pins are needed for mcpo 0.0.20
+(newer `mcp` removed a client name it imports; newer FastAPI rejects an argument it passes). The model must support function calling.

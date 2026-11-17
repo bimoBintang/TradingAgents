@@ -13,10 +13,17 @@ except ImportError:
     AlpacaBroker = None
     MarketClosedError = None
 
+try:
+    from .mt5_broker import MT5Broker, mt5_env_configured
+except ImportError:
+    MT5Broker = None
+    mt5_env_configured = None
+
 __all__ = [
     "BaseBroker",
     "BrokerConnectionError",
     "PaperBroker",
     "CcxtBroker",
     "AlpacaBroker",
+    "MT5Broker",
 ]

@@ -44,6 +44,14 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from tradingagents.dataflows.tradingview import fetch_tradingview_ta
+from tradingagents.dataflows.symbols import asset_class
+
+
+def _tv_market(ticker: str) -> dict:
+    """screener/exchange kwargs; forex needs 'forex'/'FX_IDC', everything else keeps the crypto default."""
+    if asset_class(ticker) == "forex":
+        return {"screener": "forex", "exchange": "FX_IDC"}
+    return {"screener": "crypto", "exchange": "BINANCE"}
 
 logger = logging.getLogger(__name__)
 
@@ -185,9 +193,8 @@ class TradingViewMCPClient:
                 ta_data = await asyncio.to_thread(
                     fetch_tradingview_ta,
                     symbol=ticker,
-                    screener="crypto",
-                    exchange="BINANCE",
                     interval=timeframe,
+                    **_tv_market(ticker),
                 )
             except Exception as exc:
                 logger.warning("[TradingView MCP] Fallback TA fetch failed: %s. Returning synthetic TA data.", exc)
@@ -235,7 +242,8 @@ class TradingViewMCPClient:
             # Fallback
             try:
                 ta_data = await asyncio.to_thread(
-                    fetch_tradingview_ta, symbol=ticker, interval=timeframe
+                    fetch_tradingview_ta, symbol=ticker, interval=timeframe,
+                    **({"screener": "forex", "exchange": "FX_IDC"} if asset_class(ticker) == "forex" else {}),
                 )
             except Exception as exc:
                 logger.warning("[TradingView MCP] Fallback TA fetch failed: %s. Returning synthetic TA data.", exc)

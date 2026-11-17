@@ -56,7 +56,8 @@ def _recent_closes(ticker: str, bars: int = 60) -> List[float]:
     try:
         import yfinance as yf
         period = "6mo" if bars > 60 else "3mo"
-        data = yf.Ticker(ticker).history(period=period)
+        from tradingagents.dataflows.symbols import yf_symbol
+        data = yf.Ticker(yf_symbol(ticker)).history(period=period)
         if data.empty:
             return []
         return [float(c) for c in data["Close"].tolist()][-bars:]

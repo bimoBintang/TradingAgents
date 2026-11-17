@@ -167,6 +167,12 @@ class PaperBroker(BaseBroker):
                 order_type=OrderType.MARKET,
             )
 
+    def list_protective_stops(self, ticker: str) -> List[str]:
+        return [oid for oid, s in self._resting_stops.items() if s["ticker"] == ticker]
+
+    def cancel_protective_stops(self, ticker: str) -> int:
+        return sum(self.cancel_stop_loss_order(oid) for oid in self.list_protective_stops(ticker))
+
     def cancel_stop_loss_order(self, order_id: str) -> bool:
         """Remove a resting stop (e.g. when its position is closed another way)."""
         return self._resting_stops.pop(order_id, None) is not None

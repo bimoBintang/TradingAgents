@@ -164,6 +164,23 @@ class BaseBroker(ABC):
             "Any position opened through it is UNPROTECTED if this process stops running."
         )
 
+    def list_protective_stops(self, ticker: str) -> List[str]:
+        """Order ids of stops resting at the venue for `ticker`.
+
+        Lets a fresh process find stops placed by an earlier one (the engine's
+        in-memory ticker->id map dies with each per-request graph). Brokers
+        that cannot enumerate return [] — "none known", not "none exist".
+        """
+        return []
+
+    def cancel_protective_stops(self, ticker: str) -> int:
+        """Cancel every resting stop for `ticker`; returns how many were cancelled."""
+        cancelled = 0
+        for oid in self.list_protective_stops(ticker):
+            if self.cancel_order(oid, symbol=ticker):
+                cancelled += 1
+        return cancelled
+
     def get_order_book(self, ticker: str, depth: int = 20) -> Optional[dict]:
         """Fetch Level 2 order book data for a ticker.
 

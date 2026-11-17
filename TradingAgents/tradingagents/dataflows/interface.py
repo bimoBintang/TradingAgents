@@ -221,15 +221,21 @@ def route_to_vendor(method: str, *args, **kwargs):
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
+        call_args, call_kw = args, kwargs
+        if vendor == "yfinance":  # EURUSD -> EURUSD=X (no-op for non-forex values)
+            from tradingagents.dataflows.symbols import yf_symbol
+            call_args = tuple(yf_symbol(a) for a in args[:1]) + tuple(args[1:])
+            call_kw = {k: (yf_symbol(v) if k in ("symbol", "ticker") else v) for k, v in kwargs.items()}
+
         # Filter kwargs to only pass parameters accepted by impl_func
         try:
             sig = inspect.signature(impl_func)
             has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
             if has_var_kwargs:
-                call_kwargs = kwargs
+                call_kwargs = call_kw
             else:
-                call_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-            return impl_func(*args, **call_kwargs)
+                call_kwargs = {k: v for k, v in call_kw.items() if k in sig.parameters}
+            return impl_func(*call_args, **call_kwargs)
         except (AlphaVantageRateLimitError, MessariRateLimitError, CoinGeckoRateLimitError, TradingViewRateLimitError):
             continue  # Rate limits trigger fallback
         except MCPVendorNotConfigured:

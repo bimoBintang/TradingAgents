@@ -48,12 +48,46 @@ def _has_live_credentials(exec_cfg: dict) -> bool:
     condition wouldn't put the account in live mode, there's no real
     account here to sync against.
     """
+    if exec_cfg.get("broker") == "mt5":
+        from tradingagents.execution.brokers.mt5_broker import mt5_env_configured
+        return mt5_env_configured()
     return (
         exec_cfg.get("broker") != "paper"
         and bool(exec_cfg.get("exchange"))
         and bool(exec_cfg.get("api_key"))
         and bool(exec_cfg.get("api_secret"))
     )
+
+
+def record_external_close(user_id: int, cfg: dict, ticker: str, side: str,
+                          quantity: float, entry_price: float, last_price: float) -> None:
+    """Book a position that vanished from the exchange (venue stop / liquidation).
+
+    Without this the loss never reaches RiskController's loss streak or drawdown
+    window, because the sync below overwrites the stored positions. Exit price is
+    the last stored price, so the PnL is an estimate. Never raises.
+    """
+    try:
+        from tradingagents.execution.risk_controls import RiskController
+        from tradingagents.storage.database import Database
+
+        storage = cfg.get("storage", {})
+        if not storage.get("enabled", False):
+            return
+        risk_cfg = cfg.get("risk_controls", {})
+        rc = RiskController(
+            db=Database(storage.get("db_path", "~/.tradingagents/trading.db")),
+            account_id=storage.get("account_id", f"user_{user_id}"),
+            consecutive_loss_limit=risk_cfg.get("consecutive_loss_limit", 3),
+            consecutive_loss_cooldown_seconds=risk_cfg.get("cooldown_seconds", 1800),
+        )
+        pnl = (last_price - entry_price) * quantity
+        if side != "BUY":
+            pnl = -pnl
+        rc.record_trade_result(pnl, ticker)
+        logger.warning("User %d: %s closed outside the engine (est. PnL %.2f) — recorded.", user_id, ticker, pnl)
+    except Exception as e:
+        logger.error("Could not record external close of %s for user %d: %s", ticker, user_id, e)
 
 
 def sync_user_balance(user_id: int, db: Optional[Session] = None) -> bool:
@@ -104,6 +138,13 @@ def sync_user_balance(user_id: int, db: Optional[Session] = None) -> bool:
 
         # Broker positions are the ground truth now — clear and reinsert,
         # same pattern api/db_sync.py::save_graph_to_db already uses.
+        live_tickers = {p.ticker for p in positions}
+        for old in db.query(Position).filter(Position.portfolio_id == ps.id).all():
+            if old.ticker not in live_tickers:
+                record_external_close(
+                    user_id, get_user_config(db, user_id), old.ticker, old.side,
+                    old.quantity, old.entry_price, old.current_price,
+                )
         db.query(Position).filter(Position.portfolio_id == ps.id).delete()
         for p in positions:
             db.add(Position(

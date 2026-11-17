@@ -42,14 +42,15 @@ dependencies = [
 [project.optional-dependencies]
 crypto = ["ccxt>=4.0.0"]
 stocks = ["alpaca-py>=0.31.0"]
-brokers = ["ccxt>=4.0.0", "alpaca-py>=0.31.0"]
+forex = ["mt5linux>=0.1.9"]
+brokers = ["ccxt>=4.0.0", "alpaca-py>=0.31.0", "mt5linux>=0.1.9"]
 api = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "python-dotenv>=1.0.0",
-    "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
     "slowapi>=0.1.9",
+    "apscheduler>=3.11.0",
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",
     "psycopg2-binary>=2.9.0",

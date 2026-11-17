@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Any, Optional
 
 from langchain_openai import ChatOpenAI
@@ -24,6 +25,33 @@ class UnifiedChatOpenAI(ChatOpenAI):
             kwargs.pop("temperature", None)
             kwargs.pop("top_p", None)
         super().__init__(**kwargs)
+
+
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+_THINK_OPEN = re.compile(r"<think>.*\Z", re.DOTALL)  # cut off before </think>
+
+
+def strip_think(text: str) -> str:
+    """Remove deepseek-r1 style <think>...</think> reasoning (closed or truncated)."""
+    if not isinstance(text, str) or "<think>" not in text:
+        return text
+    return _THINK_OPEN.sub("", _THINK_BLOCK.sub("", text)).strip()
+
+
+class ThinkStrippingChatOpenAI(UnifiedChatOpenAI):
+    """Ollama reasoning models put their chain of thought inline in the answer.
+    Left in, it pollutes debate arguments and the text the execution engine parses
+    for <TRADE_DECISION>. The raw text is kept in additional_kwargs["reasoning"]."""
+
+    def _create_chat_result(self, response, generation_info=None):
+        result = super()._create_chat_result(response, generation_info)
+        for gen in result.generations:
+            msg = gen.message
+            if isinstance(msg.content, str) and "<think>" in msg.content:
+                msg.additional_kwargs["reasoning"] = msg.content
+                msg.content = strip_think(msg.content)
+                gen.text = msg.content
+        return result
 
 
 class OpenAIClient(BaseLLMClient):
@@ -54,8 +82,11 @@ class OpenAIClient(BaseLLMClient):
             if api_key:
                 llm_kwargs["api_key"] = api_key
         elif self.provider == "ollama":
-            llm_kwargs["base_url"] = "http://localhost:11434/v1"
+            # Env only: self.base_url is shared by every tier and may be another provider's URL.
+            llm_kwargs["base_url"] = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
             llm_kwargs["api_key"] = "ollama"  # Ollama doesn't require auth
+            if "deepseek-r1" in self.model.lower() and "temperature" not in self.kwargs:
+                llm_kwargs["temperature"] = 0.6  # DeepSeek's recommended range is 0.5-0.7
         elif self.base_url:
             llm_kwargs["base_url"] = self.base_url
 
@@ -63,7 +94,8 @@ class OpenAIClient(BaseLLMClient):
             if key in self.kwargs:
                 llm_kwargs[key] = self.kwargs[key]
 
-        return UnifiedChatOpenAI(**llm_kwargs)
+        cls = ThinkStrippingChatOpenAI if self.provider == "ollama" else UnifiedChatOpenAI
+        return cls(**llm_kwargs)
 
     def validate_model(self) -> bool:
         """Validate model for the provider."""

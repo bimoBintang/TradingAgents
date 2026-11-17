@@ -1,6 +1,6 @@
 """Config endpoints — read and update runtime configuration (per-user).
 
-Multi-tenant: each user's config is stored in the `user_configs` table.
+The owner's config is stored in the `user_configs` table.
 API credentials are encrypted via Fernet and never stored in config_json.
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from api.schemas import ConfigResponse, ConfigUpdateRequest, BrokerTestRequest, BrokerTestResponse
 from api.auth import get_current_user
 from api.database import get_db
-from api.dependencies import CONFIG_PATH
+from api.dependencies import CONFIG_PATH  # noqa: F401  (tests patch this name)
 from api.models import User
 from api.user_context import get_user_config, save_user_config
 from api.limiter import limiter, BROKER_TEST_RATE_LIMIT
@@ -26,49 +26,6 @@ router = APIRouter(prefix="/api", tags=["Config"])
 SENSITIVE_KEYS = {"api_key", "api_secret", "password", "telegram_bot_token"}
 
 
-def _read_mcp_user_email() -> str | None:
-    """Read mcp.user_email straight from agent_config.json — the file
-    mcp_server/context.py actually resolves identity from for the local
-    stdio MCP server (a subprocess with no per-request auth). Returns
-    None if the file or key doesn't exist yet.
-    """
-    if not CONFIG_PATH.exists():
-        return None
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-        return (saved.get("mcp") or {}).get("user_email") or None
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read %s: %s", CONFIG_PATH, e)
-        return None
-
-
-def _write_mcp_user_email(email: str) -> None:
-    """Mirror mcp.user_email into agent_config.json.
-
-    `save_user_config()` only writes to the per-user DB row
-    (`user_configs.config_json`) — but the local MCP server has no HTTP
-    request to scope a user by, so it resolves identity from this flat
-    file instead (see mcp_server/context.py). Without this mirror, the
-    Settings > MCP Server > Account Email field silently does nothing:
-    it saves to a store nothing but the dashboard itself ever reads.
-    """
-    try:
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        existing = {}
-        if CONFIG_PATH.exists():
-            try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                existing = {}
-        existing.setdefault("mcp", {})["user_email"] = email
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=2)
-    except OSError as e:
-        logger.error("Failed to write mcp.user_email to %s: %s", CONFIG_PATH, e)
-
-
 @router.get("/config", response_model=ConfigResponse)
 async def read_config(
     user: User = Depends(get_current_user),
@@ -76,13 +33,6 @@ async def read_config(
 ):
     """Return the authenticated user's runtime config (secrets masked)."""
     config = get_user_config(db, user.id)
-
-    # mcp.user_email is resolved from agent_config.json at MCP-call time
-    # (not from this user's DB row) — reflect that file's value here so
-    # what Settings displays matches what the MCP server will actually do.
-    file_email = _read_mcp_user_email()
-    if file_email is not None:
-        config.setdefault("mcp", {})["user_email"] = file_email
 
     safe = _sanitise(config)
     return ConfigResponse(config=safe)
@@ -99,12 +49,6 @@ async def update_config(
     Credentials are encrypted before storage. Other fields are
     deep-merged into the existing config_json.
     """
-    mcp_updates = body.updates.get("mcp", {})
-    if isinstance(mcp_updates, dict) and "user_email" in mcp_updates:
-        # See _write_mcp_user_email(): this field must also land in
-        # agent_config.json, or the local MCP server never sees it.
-        _write_mcp_user_email(mcp_updates["user_email"])
-
     save_user_config(db, user.id, body.updates)
 
     # Return updated config

@@ -5,6 +5,7 @@ Includes pre-flight safety checks, RiskController gate, post-execution portfolio
 updates, idempotency protection, and logging.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -127,14 +128,15 @@ class ExecutionEngine:
     # ── Idempotency ───────────────────────────────────────────────────
 
     @staticmethod
-    def _generate_idempotency_key(decision: TradeDecision) -> str:
-        """Generate a unique idempotency key for a trade decision.
+    def _generate_idempotency_key(decision: TradeDecision, decision_json: str = "") -> str:
+        """Deterministic idempotency key: {ticker}_{action}_{sha256(decision_json)[:16]}.
 
-        Format: {ticker}_{action}_{timestamp_ms}
-        This prevents duplicate orders on network timeout/retry.
+        A timestamp in the key made every retry look like a new order, so the
+        duplicate check could never fire. Hashing the payload means a retry of
+        the SAME decision maps to the same key.
         """
-        ts_ms = int(time.time() * 1000)
-        return f"{decision.ticker}_{decision.action.value}_{ts_ms}"
+        digest = hashlib.sha256(decision_json.encode("utf-8")).hexdigest()[:16]
+        return f"{decision.ticker}_{decision.action.value}_{digest}"
 
     def _check_idempotency(self, key: str) -> bool:
         """Check if an idempotency key has already been processed.
@@ -191,7 +193,7 @@ class ExecutionEngine:
         ticker = decision.ticker
 
         # Step 2: Generate or use provided idempotency key
-        idem_key = idempotency_key or self._generate_idempotency_key(decision)
+        idem_key = idempotency_key or self._generate_idempotency_key(decision, decision_json)
         if not self._check_idempotency(idem_key):
             self._log(
                 "REJECTED",
@@ -662,6 +664,17 @@ class ExecutionEngine:
         Returns:
             ATR value as float, or None if calculation fails.
         """
+        # Brokers that can compute ATR from their own candles (MT5/forex) do it themselves;
+        # otherwise a ticker like EURUSD would fall through to yfinance and return None.
+        if hasattr(self.broker, "fetch_atr"):
+            cache_key = f"atr_{ticker}"
+            cached = self._atr_cache.get(cache_key)
+            if cached and time.time() - cached[1] < 3600:
+                return cached[0]
+            value = self.broker.fetch_atr(ticker, self.atr_timeframe, period)
+            self._atr_cache[cache_key] = (value, time.time())
+            return value
+
         # Crypto pairs (CCXT format) — delegate to CCXT-based ATR
         if "/" in ticker:
             return self._get_atr_ccxt(ticker, period)
@@ -677,7 +690,8 @@ class ExecutionEngine:
         try:
             import yfinance as yf
 
-            data = yf.Ticker(ticker).history(period="1mo", interval="1d")
+            from tradingagents.dataflows.symbols import yf_symbol
+            data = yf.Ticker(yf_symbol(ticker)).history(period="1mo", interval="1d")
             if data is None or len(data) < period + 1:
                 self._atr_cache[cache_key] = (None, now)
                 return None
@@ -756,6 +770,17 @@ class ExecutionEngine:
                     f"Close existing position first or increase it manually."
                 )
 
+        # Check 7: SELL needs a long to close, or a futures venue to open a short
+        if decision.action in (TradeAction.SELL, TradeAction.STRONG_SELL):
+            existing = self.portfolio.positions.get(decision.ticker)
+            if existing and existing.side == OrderSide.SELL:
+                return f"Already have SELL (short) position in {decision.ticker}."
+            if existing is None and getattr(self.broker, "market_type", "spot") != "future":
+                return (
+                    f"SELL {decision.ticker} rejected: no position to close and "
+                    f"shorting is not available on a spot venue."
+                )
+
         return None  # All checks passed
 
     # ── Post-execution ────────────────────────────────────────────────
@@ -771,11 +796,16 @@ class ExecutionEngine:
         sl_price = decision.calculate_stop_loss_price(fill_price)
         tp_price = decision.calculate_take_profit_price(fill_price)
 
-        if result.side == OrderSide.BUY:
+        # Opening vs closing is decided by the existing position, not the order
+        # side: SELL can open a short (futures) and BUY can cover one.
+        existing = self.portfolio.positions.get(ticker)
+        is_closing = existing is not None and existing.side != result.side
+
+        if not is_closing:
             # Open new position in portfolio manager
             self.portfolio.open_position(
                 ticker=ticker,
-                side=OrderSide.BUY,
+                side=result.side,
                 quantity=result.filled_quantity,
                 entry_price=fill_price,
                 stop_loss_price=sl_price,
@@ -812,7 +842,7 @@ class ExecutionEngine:
             if self.notifier:
                 self.notifier.send_trade_alert(result, ticker)
 
-        elif result.side == OrderSide.SELL:
+        else:
             # Close existing position
             pnl = self.portfolio.close_position(
                 ticker=ticker,
@@ -968,6 +998,8 @@ class ExecutionEngine:
                     if self.position_tracker:
                         self.position_tracker.unregister_position(signal.ticker)
                     self.stop_loss_manager.unregister_position(signal.ticker)
+                    # The venue stop would otherwise be orphaned.
+                    self._cancel_protective_stop(signal.ticker)
 
                     # Record trade result for consecutive loss tracking
                     if pnl is not None and self.risk_controller:
@@ -1179,6 +1211,13 @@ class ExecutionEngine:
         """
         order_id = self._protective_stops.pop(ticker, None)
         if not order_id:
+            # A new engine (per-request graph) has no id map; ask the venue.
+            try:
+                n = self.broker.cancel_protective_stops(ticker)
+                if n:
+                    self._log("STOP_CANCELLED", f"{n} venue stop(s) cancelled for {ticker}", ticker=ticker)
+            except Exception as e:
+                logger.warning("Could not cancel venue stops for %s: %s", ticker, e)
             return
         try:
             if hasattr(self.broker, "cancel_stop_loss_order"):
@@ -1237,6 +1276,28 @@ class ExecutionEngine:
                 entry_price=pos.entry_price,
             )
             report["added"].append(ticker)
+            # Adopted positions get the same monitoring as ones we opened, and
+            # a loud warning if nothing at the venue is protecting them.
+            local = self.portfolio.positions.get(ticker)
+            if local:
+                if self.position_tracker:
+                    self.position_tracker.register_position(local)
+                if self.stop_loss_manager:
+                    self.stop_loss_manager.register_position(local)
+            try:
+                has_stop = bool(self.broker.list_protective_stops(ticker))
+            except Exception:
+                has_stop = False
+            if not has_stop:
+                logger.critical(
+                    "Reconciled %s found on exchange with NO resting stop — UNPROTECTED.", ticker
+                )
+                self._log("NO_STOP", f"{ticker}: adopted by reconcile, no venue stop — UNPROTECTED", ticker=ticker)
+                if self.notifier:
+                    try:
+                        self.notifier.send_alert(f"⚠️ UNPROTECTED POSITION: {ticker} found on exchange without a stop-loss.")
+                    except Exception:
+                        pass
             logger.info(
                 "Reconciled: added %s %s %s @ %.4f (found on exchange, missing locally)",
                 pos.side.value, pos.quantity, ticker, pos.entry_price,
@@ -1245,11 +1306,27 @@ class ExecutionEngine:
         # 2. Positions in local portfolio but NOT on exchange → remove
         for ticker in local_tickers - exchange_tickers:
             local_pos = self.portfolio.positions[ticker]
-            self.portfolio.close_position(
+            # Most likely a venue stop (or liquidation) fired. Book it like any
+            # other close, or the loss never reaches the loss-streak/drawdown
+            # limits. Exit price is the last known price, so PnL is an estimate.
+            pnl = self.portfolio.close_position(
                 ticker=ticker,
                 exit_price=local_pos.current_price,
                 reasoning="Reconciliation: position no longer on exchange",
             )
+            if self.position_tracker:
+                self.position_tracker.unregister_position(ticker)
+            if self.stop_loss_manager:
+                self.stop_loss_manager.unregister_position(ticker)
+            self._cancel_protective_stop(ticker)
+            if pnl is not None:
+                if self.risk_controller:
+                    self.risk_controller.record_trade_result(pnl, ticker)
+                if self.on_position_closed:
+                    try:
+                        self.on_position_closed(ticker, pnl)
+                    except Exception as e:
+                        self._log("ERROR", f"Reflection callback failed: {e}", ticker=ticker)
             report["removed"].append(ticker)
             logger.warning(
                 "Reconciled: removed %s (in local portfolio but not on exchange)",

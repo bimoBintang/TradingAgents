@@ -17,6 +17,8 @@ def create_analyst_synthesizer(llm):
             "Macro/Geo": state.get("macro_geo_report", ""),
             "Correlation": state.get("correlation_report", ""),
             "Prediction Market": state.get("prediction_market_report", ""),
+            "ICT Smart Money": state.get("ict_report", ""),
+            "Chart Vision": state.get("chart_vision_report", ""),
         }
         
         # Filter out empty reports
