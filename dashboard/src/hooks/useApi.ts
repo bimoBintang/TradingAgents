@@ -4,13 +4,8 @@
  */
 
 import useSWR from 'swr';
-import { api } from '../services/api';
-import type { Portfolio, Trade, Performance, EquityPoint, SystemStatus, OHLCVResponse, FibonacciResponse, AdminSystemStats, AdminUserItem } from '../services/api';
-import type {
-  FVGResponse, IFVGResponse, LiquiditySweepResponse,
-  OrderFlowResponse, AnchoredVWAPResponse, VolumeProfileResponse,
-  PredictionMarketsResponse,
-} from '../types/smc';
+import { api, getAutopilot, getDecisions } from '../services/api';
+import type { Portfolio, Trade, Performance, EquityPoint, SystemStatus, OHLCVResponse } from '../services/api';
 
 // ── Default Fallbacks ────────────────────────────────────────────────
 
@@ -106,17 +101,6 @@ export function useConfig() {
   return { data: data!, loading: isLoading, error: error?.message, refetch: mutate };
 }
 
-export function useAnalyzeResult(taskId: string | null) {
-  const { data, error, isLoading, mutate } = useSWR(
-    taskId ? `/api/analyze/${taskId}` : null,
-    () => api.analyzeResult(taskId!),
-    {
-      refreshInterval: (data) => (data?.status === 'queued' || data?.status === 'running') ? 2000 : 0,
-    }
-  );
-  return { data, loading: isLoading, error: error?.message, refetch: mutate };
-}
-
 // ── Market Data Hooks ────────────────────────────────────────────────
 
 const MARKET_SWR_OPTS = {
@@ -134,159 +118,17 @@ export function useOHLCV(ticker: string, interval = '1d') {
   return { data: data!, loading: isLoading, error: error?.message, refetch: mutate };
 }
 
-export function useFibonacci(ticker: string) {
-  const { data, error, isLoading, mutate } = useSWR<FibonacciResponse>(
-    ticker ? `/api/market-data/fibonacci/${ticker}` : null,
-    () => api.fibonacci(ticker),
-    { ...MARKET_SWR_OPTS },
-  );
-  return { data, loading: isLoading, error: error?.message, refetch: mutate };
-}
-
 // ── SMC Hooks ────────────────────────────────────────────────────────
 
-export function useFVG(ticker: string) {
-  const { data, error, isLoading } = useSWR<FVGResponse>(
-    ticker ? `/api/market-data/fvg/${ticker}` : null,
-    () => api.fvg(ticker), { ...MARKET_SWR_OPTS },
-  );
-  return { data, loading: isLoading, error: error?.message };
-}
 
-export function useIFVG(ticker: string) {
-  const { data, error, isLoading } = useSWR<IFVGResponse>(
-    ticker ? `/api/market-data/ifvg/${ticker}` : null,
-    () => api.ifvg(ticker), { ...MARKET_SWR_OPTS },
-  );
-  return { data, loading: isLoading, error: error?.message };
-}
-
-export function useLiquiditySweeps(ticker: string) {
-  const { data, error, isLoading } = useSWR<LiquiditySweepResponse>(
-    ticker ? `/api/market-data/liquidity-sweeps/${ticker}` : null,
-    () => api.liquiditySweeps(ticker), { ...MARKET_SWR_OPTS },
-  );
-  return { data, loading: isLoading, error: error?.message };
-}
-
-export function useOrderFlow(ticker: string) {
-  const { data, error, isLoading } = useSWR<OrderFlowResponse>(
-    ticker ? `/api/market-data/order-flow/${ticker}` : null,
-    () => api.orderFlow(ticker), { ...MARKET_SWR_OPTS },
-  );
-  return { data, loading: isLoading, error: error?.message };
-}
-
-export function useAnchoredVWAP(ticker: string) {
-  const { data, error, isLoading } = useSWR<AnchoredVWAPResponse>(
-    ticker ? `/api/market-data/vwap/${ticker}` : null,
-    () => api.anchoredVwap(ticker), { ...MARKET_SWR_OPTS },
-  );
-  return { data, loading: isLoading, error: error?.message };
-}
-
-export function useVolumeProfile(ticker: string) {
-  const { data, error, isLoading } = useSWR<VolumeProfileResponse>(
-    ticker ? `/api/market-data/volume-profile/${ticker}` : null,
-    () => api.volumeProfile(ticker), { ...MARKET_SWR_OPTS },
-  );
-  return { data, loading: isLoading, error: error?.message };
-}
-
-export function usePredictionMarkets(query: string) {
-  const { data, error, isLoading } = useSWR<PredictionMarketsResponse>(
-    query ? `/api/market-data/prediction-markets/${query}` : null,
-    () => api.predictionMarkets(query), { ...MARKET_SWR_OPTS },
-  );
-  return { data, loading: isLoading, error: error?.message };
-}
-
-// ── Admin Hooks ──────────────────────────────────────────────────────
-
-export const useJournalNote = (date: string) => {
-  const fetcher = async (url: string) => {
-    const headers: Record<string, string> = {};
-    const clerk = (window as any).Clerk;
-    if (clerk?.session) {
-      const token = await clerk.session.getToken();
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-    }
-    const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error('API error');
-    return res.json();
-  };
-
-  const { data, error, mutate, isLoading } = useSWR(
-    `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/journal/notes?date=${date}`,
-    fetcher
-  );
-
-  return {
-    data: data as { content: string, date: string } | undefined,
-    loading: isLoading,
-    error,
-    mutate
-  };
-};
-
-export const useJournalHistory = () => {
-  const fetcher = async (url: string) => {
-    const headers: Record<string, string> = {};
-    const clerk = (window as any).Clerk;
-    if (clerk?.session) {
-      const token = await clerk.session.getToken();
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-    }
-    const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error('API error');
-    return res.json();
-  };
-
-  const { data, error, mutate, isLoading } = useSWR(
-    `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/journal/notes/history`,
-    fetcher
-  );
-
-  return {
-    data: data as { id: number, date: string, content: string }[] | undefined,
-    loading: isLoading,
-    error,
-    mutate
-  };
-};
-
-export function useAdminStats() {
-  const { data, error, isLoading, mutate } = useSWR<AdminSystemStats>(
-    '/api/admin/stats',
-    () => api.admin.stats(),
-    { refreshInterval: 30000 },
-  );
+export function useAutopilot() {
+  const { data, error, isLoading, mutate } = useSWR('/api/autopilot', () => getAutopilot(), { refreshInterval: 10000 });
   return { data, loading: isLoading, error: error?.message, refetch: mutate };
 }
 
-export function useAdminUsers() {
-  const { data, error, isLoading, mutate } = useSWR<AdminUserItem[]>(
-    '/api/admin/users',
-    () => api.admin.users(),
-    { refreshInterval: 30000 },
-  );
+export function useDecisions(limit = 20) {
+  const { data, error, isLoading, mutate } = useSWR(['/api/decisions', limit], () => getDecisions(limit), {
+    refreshInterval: 15000,
+  });
   return { data: data ?? [], loading: isLoading, error: error?.message, refetch: mutate };
-}
-
-export function useAdminConfig() {
-  const { data, error, isLoading, mutate } = useSWR<import('../services/api').AdminConfig>(
-    '/api/admin/config',
-    () => api.admin.getConfig(),
-    { refreshInterval: 60000 },
-  );
-  return { data, loading: isLoading, error: error?.message, refetch: mutate };
-}
-
-export function useAdminUserDetails(userId: number | null) {
-  const { data, error, isLoading, mutate } = useSWR<import('../services/api').AdminUserDetailsResponse>(
-    userId ? `/api/admin/users/${userId}/details` : null,
-    () => userId ? api.admin.getUserDetails(userId) : Promise.reject('No ID'),
-    { refreshInterval: 15000, revalidateOnFocus: false },
-  );
-  return { data, loading: isLoading, error: error?.message, refetch: mutate };
 }

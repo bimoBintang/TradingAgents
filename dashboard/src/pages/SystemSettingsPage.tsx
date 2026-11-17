@@ -189,7 +189,6 @@ export const SystemSettingsPage: React.FC = () => {
   const order_flow = localConfig.order_flow ?? {};
   const risk_controls = localConfig.risk_controls ?? {};
   const notifications = localConfig.notifications ?? {};
-  const mcp = localConfig.mcp ?? {};
 
 
   return (
@@ -204,7 +203,6 @@ export const SystemSettingsPage: React.FC = () => {
             { id: 'risk', icon: ShieldAlert, label: 'Risk Controls (New)' },
             { id: 'ai_models', icon: Brain, label: 'AI Language Models' },
             { id: 'alerts', icon: Bell, label: 'Alerts & Notifications' },
-            { id: 'mcp', icon: Plug, label: 'MCP Server' },
           ].map(item => (
             <button
               key={item.id}
@@ -310,7 +308,7 @@ export const SystemSettingsPage: React.FC = () => {
                         { id: 'kraken',   label: 'Kraken',   abbr: 'KR', color: 'text-purple-400', bg: 'bg-purple-500/10' },
                         { id: 'gateio',   label: 'Gate.io',  abbr: 'GT', color: 'text-cyan-400',   bg: 'bg-cyan-500/10' },
                       ].map(ex => {
-                        const isSelected = execution.exchange === ex.id && execution.broker !== 'alpaca';
+                        const isSelected = execution.exchange === ex.id && execution.broker !== 'alpaca' && execution.broker !== 'mt5';
                         return (
                           <button
                             key={ex.id}
@@ -347,6 +345,7 @@ export const SystemSettingsPage: React.FC = () => {
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                       {[
                         { id: 'alpaca', label: 'Alpaca Markets', abbr: 'AL', color: 'text-lime-400', bg: 'bg-lime-500/10' },
+                        { id: 'mt5', label: 'MetaTrader 5 (Forex)', abbr: 'MT', color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
                         { id: 'interactive_brokers', label: 'Interactive Brokers', abbr: 'IB', color: 'text-red-400', bg: 'bg-red-500/10', disabled: true },
                       ].map(ex => {
                         const isSelected = execution.broker === ex.id;
@@ -384,6 +383,15 @@ export const SystemSettingsPage: React.FC = () => {
                       })}
                     </div>
                   </div>
+                  {execution.broker === 'mt5' && (
+                    <div className="mt-4 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-xs text-cyan-200 leading-relaxed">
+                      Forex lewat MetaTrader 5. Kredensial tidak diisi di sini: server membaca
+                      <code className="font-mono mx-1">MT5_LOGIN</code>,
+                      <code className="font-mono mx-1">MT5_PASSWORD</code>,
+                      <code className="font-mono mx-1">MT5_SERVER</code> dari environment. Gunakan akun <b>demo</b> dulu.
+                      Watchlist contoh: <code className="font-mono">EURUSD</code> (AI Config).
+                    </div>
+                  )}
 
                   {/* API Credentials Input Form */}
                   <div className="mt-2 p-6 rounded-xl border border-slate-800 bg-slate-950/50">
@@ -1371,84 +1379,6 @@ export const SystemSettingsPage: React.FC = () => {
                  </div>
                </CardContent>
              </Card>
-          </div>
-        )}
-
-        {/* VIEW: MCP SERVER */}
-        {activeMenu === 'mcp' && (
-          <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-
-            <div className="bg-blue-500/10 border border-blue-500/20 p-4 rounded-xl flex items-start gap-4">
-              <Plug className="text-blue-400 shrink-0 mt-0.5" size={20} />
-              <div>
-                <h4 className="text-blue-400 font-bold text-sm">Model Context Protocol (MCP)</h4>
-                <p className="text-blue-300/80 text-xs mt-1 leading-relaxed">
-                  TradingAgents can run as a local MCP server, exposing market-data,
-                  portfolio, and analysis tools to Claude Desktop or Claude Code
-                  (<code className="font-mono">mcp_server/server.py</code>). It runs as
-                  a local subprocess with no login session, so it acts on behalf of a
-                  single fixed account instead — set which one below.
-                </p>
-              </div>
-            </div>
-
-            <Card className="bg-slate-900/50 border-slate-800">
-              <CardHeader className="py-5 border-b border-slate-800/50">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Server className="text-blue-400" size={18} /> Acting Account
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-6">
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                  Account Email
-                </label>
-                <p className="text-xs text-slate-500 mb-3 leading-relaxed max-w-xl">
-                  Every <code className="font-mono">read_portfolio</code>,{' '}
-                  <code className="font-mono">list_recent_trades</code>, and{' '}
-                  <code className="font-mono">run_analysis</code> call from an MCP
-                  client will read/act on this account's portfolio. Leave blank to
-                  fall back to the first account in the database (not recommended
-                  once you have more than one).
-                </p>
-                <input
-                  type="email"
-                  value={mcp.user_email ?? ''}
-                  onChange={(e) => setNestedValue('mcp.user_email', e.target.value)}
-                  placeholder="you@example.com"
-                  className="w-full max-w-md bg-slate-950 border border-slate-700/60 text-slate-200 text-sm rounded-lg p-3 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 font-mono transition-all shadow-inner"
-                />
-                {mcp.user_email && (
-                  <p className="text-xs text-emerald-400 mt-2 flex items-center gap-1.5">
-                    <CheckCircle2 size={12} /> MCP tools will act as {mcp.user_email}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="bg-slate-950/40 border-slate-800 overflow-hidden">
-              <CardHeader className="py-4 border-b border-slate-800/50 bg-slate-900/30">
-                <CardTitle className="text-sm font-semibold text-slate-300 flex items-center gap-2">
-                  <Settings2 size={16} /> Connecting a Client
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-6 text-xs text-slate-400 leading-relaxed">
-                <p className="mb-2">
-                  Register the server in your MCP client config (e.g. Claude Code's{' '}
-                  <code className="font-mono text-slate-300">.mcp.json</code>):
-                </p>
-                <pre className="bg-black/40 border border-slate-800 rounded-lg p-4 overflow-x-auto font-mono text-slate-300">
-{`{
-  "mcpServers": {
-    "tradingagents": {
-      "command": "uv",
-      "args": ["run", "--project", "C:\\\\TradingAgents\\\\TradingAgents",
-                "python", "-m", "mcp_server.server"]
-    }
-  }
-}`}
-                </pre>
-              </CardContent>
-            </Card>
           </div>
         )}
       </div>

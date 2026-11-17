@@ -3,27 +3,18 @@
  *
  * usePortfolioWS() — connects to ws /ws/portfolio, auto-reconnects,
  * falls back to SWR polling if WebSocket fails.
- * useChartControlWS() — connects to ws /ws/chart-control (Fase 7):
+ * useChartControlWS() — connects to ws /ws/chart-control:
  * reports this tab's chart state, receives MCP-driven chart commands.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Portfolio, DecisionSummary } from '../services/api';
+import type { Portfolio } from '../services/api';
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 /** Convert http(s) URL to ws(s) URL */
 function getWsBase(): string {
   return BASE.replace(/^http/, 'ws');
-}
-
-/** Get Clerk JWT token for WebSocket auth */
-async function getToken(): Promise<string> {
-  const clerk = (window as any).Clerk;
-  if (clerk?.session) {
-    return (await clerk.session.getToken()) ?? '';
-  }
-  return '';
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -48,7 +39,7 @@ export function usePortfolioWS() {
   // from a superseded effect run. A plain boolean "mountedRef" is not
   // enough under StrictMode: its double mount/cleanup/mount cycle resets
   // the flag back to true while the FIRST connect() call is still
-  // awaiting getToken(), letting it resume and open a second, duplicate
+  // awaiting an async step, letting it resume and open a second, duplicate
   // WebSocket whose events race the real one — flooding OverviewPage's
   // connection-status badge with rapid, out-of-order re-renders that
   // triggered the "insertBefore" DOM crash right after sign-in.
@@ -57,17 +48,7 @@ export function usePortfolioWS() {
   const connect = useCallback(async (generation: number) => {
     if (generationRef.current !== generation) return;
 
-    const token = await getToken();
-    if (generationRef.current !== generation) return; // superseded while awaiting
-
-    if (!token) {
-      // No auth token — wait and retry
-      setStatus('disconnected');
-      setTimeout(() => connect(generation), 3000);
-      return;
-    }
-
-    const url = `${getWsBase()}/ws/portfolio?token=${token}`;
+    const url = `${getWsBase()}/ws/portfolio`;
     setStatus('connecting');
 
     try {
@@ -161,10 +142,8 @@ export function useOhlcvWS(ticker: string, timeframe: string, enabled: boolean) 
 
     const connect = async () => {
       if (generationRef.current !== generation) return;
-      const token = await getToken();
-      if (!token || generationRef.current !== generation) return;
 
-      const url = `${getWsBase()}/ws/ohlcv/${encodeURIComponent(ticker)}?timeframe=${encodeURIComponent(timeframe)}&token=${token}`;
+      const url = `${getWsBase()}/ws/ohlcv/${encodeURIComponent(ticker)}?timeframe=${encodeURIComponent(timeframe)}`;
       setStatus('connecting');
       const ws = new WebSocket(url);
       wsRef.current = ws;
@@ -208,83 +187,6 @@ export function useOhlcvWS(ticker: string, timeframe: string, enabled: boolean) 
   }, [ticker, timeframe, enabled]);
 
   return { candles, status };
-}
-
-// ── useAnalysisWS ────────────────────────────────────────────────────
-
-// Flat shape, matching AnalysisResultResponse from GET /api/analyze/{task_id}
-// exactly (api/schemas.py) — the backend used to nest decision/order_result/
-// reports under a `result` key here only, while AnalysisPage.tsx always
-// read them flat (rawData?.decision) — so the results section silently
-// never rendered whenever this WebSocket was the active source, even
-// though `status` correctly showed "completed". See api/routers/
-// websocket.py's ws_analysis for the fix.
-interface AnalysisStatus {
-  task_id: string;
-  status: string;
-  ticker?: string;
-  decision?: DecisionSummary | null;
-  order_result?: any;
-  reports?: Record<string, string | null>;
-  error?: string;
-}
-
-export function useAnalysisWS(taskId: string | null) {
-  const [data, setData] = useState<AnalysisStatus | null>(null);
-  const [status, setStatus] = useState<WsStatus>('disconnected');
-  const wsRef = useRef<WebSocket | null>(null);
-  // Same StrictMode-safe generation guard as usePortfolioWS — see the
-  // comment there for why a plain "mountedRef" boolean isn't sufficient.
-  const generationRef = useRef(0);
-
-  useEffect(() => {
-    const generation = ++generationRef.current;
-
-    if (!taskId) return;
-
-    const connectWs = async () => {
-      const token = await getToken();
-      if (!token || generationRef.current !== generation) return;
-
-      const url = `${getWsBase()}/ws/analysis/${taskId}?token=${token}`;
-      setStatus('connecting');
-
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (generationRef.current === generation) setStatus('connected');
-      };
-
-      ws.onmessage = (event) => {
-        if (generationRef.current !== generation) return;
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'analysis_status') {
-            setData(msg);
-            // Auto-close on terminal state
-            if (msg.status === 'completed' || msg.status === 'failed') {
-              setStatus('disconnected');
-            }
-          }
-        } catch { /* ignore */ }
-      };
-
-      ws.onclose = () => {
-        if (generationRef.current === generation) setStatus('disconnected');
-      };
-    };
-
-    connectWs();
-
-    return () => {
-      generationRef.current += 1;
-      wsRef.current?.close();
-      wsRef.current = null;
-    };
-  }, [taskId]);
-
-  return { data, status };
 }
 
 // ── useChartControlWS ────────────────────────────────────────────────
@@ -338,10 +240,8 @@ export function useChartControlWS(handlers: ChartControlHandlers) {
 
     const connect = async () => {
       if (generationRef.current !== generation) return;
-      const token = await getToken();
-      if (!token || generationRef.current !== generation) return;
 
-      const ws = new WebSocket(`${getWsBase()}/ws/chart-control?token=${token}`);
+      const ws = new WebSocket(`${getWsBase()}/ws/chart-control`);
       wsRef.current = ws;
 
       ws.onmessage = (event) => {

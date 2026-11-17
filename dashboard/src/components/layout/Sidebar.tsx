@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, 
-  Search,
-  Briefcase, 
   BookOpen, 
   Bot, 
   Settings,
@@ -18,20 +16,15 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpen }) => {
   const [online, setOnline] = useState(false);
-  const [latency, setLatency] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
     const check = async () => {
-      const t0 = performance.now();
       try {
         await api.health();
-        if (active) {
-          setOnline(true);
-          setLatency(Math.round(performance.now() - t0));
-        }
+        if (active) setOnline(true);
       } catch {
-        if (active) { setOnline(false); setLatency(null); }
+        if (active) setOnline(false);
       }
     };
     check();
@@ -41,8 +34,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
 
   const navItems = [
     { name: 'Overview', icon: LayoutDashboard },
-    { name: 'Analysis', icon: Search },
-    { name: 'Positions', icon: Briefcase },
     { name: 'Journal', icon: BookOpen },
     { name: 'AI Config', icon: Bot },
     { name: 'Settings', icon: Settings },
@@ -91,33 +82,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
         })}
       </nav>
 
-      {/* Connection Status — LIVE */}
-      <div className="p-6">
-        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-400">
-          <div className="flex items-center gap-2 mb-2 font-semibold">
-            <span className="relative flex h-2 w-2">
-              {online ? (
-                <>
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                </>
-              ) : (
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
-              )}
-            </span>
-            {online ? 'API ONLINE' : 'API OFFLINE'}
-          </div>
-          <div className="flex justify-between mt-1">
-            <span>Latency:</span>
-            <span className={`font-mono ${online ? 'text-emerald-500' : 'text-rose-400'}`}>
-              {latency !== null ? `${latency}ms` : '—'}
-            </span>
-          </div>
-          <div className="flex justify-between mt-1">
-            <span>Endpoint:</span>
-            <span className="font-mono text-slate-500 truncate ml-2">:8000</span>
-          </div>
-        </div>
+      {/* API status */}
+      <div className="px-6 py-4 flex items-center gap-2 text-xs font-semibold text-slate-400">
+        <span className="relative flex h-2 w-2">
+          {online ? (
+            <>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </>
+          ) : (
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+          )}
+        </span>
+        {online ? 'API ONLINE' : 'API OFFLINE'}
       </div>
     </aside>
   );

@@ -7,33 +7,18 @@
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
-import type {
-  FVGResponse, IFVGResponse, LiquiditySweepResponse,
-  OrderFlowResponse, AnchoredVWAPResponse, VolumeProfileResponse,
-  PredictionMarketsResponse,
-} from '../types/smc';
 
-// ── Core request function (Bearer Token Injecting) ────────────────────
+// ── Core request function ─────────────────────────────────────────────
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(opts?.headers as Record<string, string>),
   };
-  
-  // Dynamically inject Clerk JWT if active session exists
-  const clerk = (window as any).Clerk;
-  if (clerk && clerk.session) {
-    const token = await clerk.session.getToken();
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-  }
-  
+
   const res = await fetch(`${BASE}${path}`, { 
     ...opts, 
     headers,
-    // credentials: 'omit' is default, no longer needing 'include' cookies
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -43,17 +28,6 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
 }
 
 // ── Types ────────────────────────────────────────────────────────────
-
-export interface AuthUser {
-  email: string;
-  name: string;
-  is_admin?: boolean;
-  created_at: string;
-}
-
-export interface AuthResponse {
-  user: AuthUser;
-}
 
 export interface Position {
   ticker: string;
@@ -130,44 +104,6 @@ export interface SystemStatus {
   uptime_seconds: number;
 }
 
-/**
- * Normalized Trader decision — see api/schemas.py::DecisionSummary and
- * api/routers/analysis.py::_parse_decision() for why this is the ONE
- * shape every consumer gets, regardless of whether the backend's
- * structured extraction succeeded (is_structured: true, most fields
- * populated) or fell back to a bare action word (is_structured: false,
- * only action/raw_text present). Never guess at `decision`'s shape in a
- * component — this interface IS the contract.
- */
-export interface DecisionSummary {
-  action: string; // BUY | SELL | HOLD | STRONG_BUY | STRONG_SELL
-  is_structured: boolean;
-  raw_text: string;
-  ticker?: string | null;
-  confidence_score?: number | null;
-  quantity_pct?: number | null;
-  order_type?: string | null;
-  limit_price?: number | null;
-  stop_loss_pct?: number | null;
-  take_profit_pct?: number | null;
-  reasoning?: string | null;
-  key_factors?: string[] | null;
-  risk_reward_ratio?: number | null;
-  time_horizon?: string | null;
-  leverage?: number | null;
-  position_side?: string | null;
-  margin_type?: string | null;
-}
-
-export interface AnalyzeResult {
-  task_id: string;
-  status: string;
-  decision?: DecisionSummary | null;
-  order_result?: any;
-  reports?: Record<string, string | null>;
-  error?: string;
-}
-
 // ── API Methods ──────────────────────────────────────────────────────
 
 export const api = {
@@ -193,14 +129,6 @@ export const api = {
   equityCurve: () => request<EquityPoint[]>('/api/journal/equity-curve'),
   rejections: () => request<Record<string, number>>('/api/journal/rejections'),
 
-  // Analysis
-  analyze: (ticker: string, auto_execute = false) =>
-    request<{ task_id: string }>('/api/analyze', {
-      method: 'POST',
-      body: JSON.stringify({ ticker, auto_execute }),
-    }),
-  analyzeResult: (taskId: string) => request<AnalyzeResult>(`/api/analyze/${taskId}`),
-
   // Config
   config: () => request<{ config: Record<string, unknown> }>('/api/config'),
   testBrokerConnection: (body: BrokerTestRequest) =>
@@ -214,115 +142,13 @@ export const api = {
       body: JSON.stringify({ updates }),
     }),
 
-  // CSV Export — triggers download with auth
-  exportCSV: async () => {
-    const headers: Record<string, string> = {};
-    const clerk = (window as any).Clerk;
-    if (clerk?.session) {
-      const token = await clerk.session.getToken();
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-    }
-    const res = await fetch(`${BASE}/api/journal/export`, { headers });
-    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `trades_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  },
-
-  // Journal Notes
-  saveNote: (date: string, content: string) =>
-    request<{ date: string; content: string }>('/api/journal/notes', {
-      method: 'POST',
-      body: JSON.stringify({ date, content }),
-    }),
-
   // Market Data
   ohlcv: (ticker: string, interval = '1d', period = 200) =>
     request<OHLCVResponse>(`/api/market-data/ohlcv?ticker=${encodeURIComponent(ticker)}&interval=${interval}&period=${period}`),
-  fibonacci: (ticker: string, period = 90, extensions = true) =>
-    request<FibonacciResponse>(`/api/market-data/fibonacci?ticker=${encodeURIComponent(ticker)}&period=${period}&extensions=${extensions}`),
 
-  // SMC
-  fvg: (ticker: string, period = 90) =>
-    request<FVGResponse>(`/api/market-data/fvg?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-  ifvg: (ticker: string, period = 90) =>
-    request<IFVGResponse>(`/api/market-data/ifvg?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-  liquiditySweeps: (ticker: string, period = 90) =>
-    request<LiquiditySweepResponse>(`/api/market-data/liquidity-sweeps?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-  orderFlow: (ticker: string, period = 30) =>
-    request<OrderFlowResponse>(`/api/market-data/order-flow?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-  anchoredVwap: (ticker: string, period = 90) =>
-    request<AnchoredVWAPResponse>(`/api/market-data/vwap?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-  volumeProfile: (ticker: string, period = 90) =>
-    request<VolumeProfileResponse>(`/api/market-data/volume-profile?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-  predictionMarkets: (query: string, limit = 10) =>
-    request<PredictionMarketsResponse>(`/api/market-data/prediction-markets?query=${encodeURIComponent(query)}&limit=${limit}`),
-
-  // Admin
-  admin: {
-    stats: () => request<AdminSystemStats>('/api/admin/stats'),
-    users: () => request<AdminUserItem[]>('/api/admin/users'),
-    updateUserRole: (userId: number, isAdmin: boolean) =>
-      request<{ status: string; user_id: number; is_admin: boolean }>(`/api/admin/users/${userId}/role`, {
-        method: 'PUT',
-        body: JSON.stringify({ is_admin: isAdmin }),
-      }),
-    getConfig: () => request<AdminConfig>('/api/admin/config'),
-    updateConfig: (data: Partial<AdminConfig>) =>
-      request<AdminConfig>('/api/admin/config', {
-        method: 'PUT',
-        body: JSON.stringify(data),
-      }),
-    getUserDetails: (userId: number) => request<AdminUserDetailsResponse>(`/api/admin/users/${userId}/details`),
-  },
 };
 
-// ── Admin Types ──────────────────────────────────────────────────────
-
-export interface AdminUserDetailsResponse {
-  id: number;
-  email: string;
-  name: string;
-  is_admin: boolean;
-  created_at: string;
-  portfolio_balance: number;
-  total_equity: number;
-  total_pnl: number;
-  win_rate: number;
-  total_trades: number;
-  max_drawdown_pct: number;
-  active_positions_count: number;
-}
-
-export interface AdminConfig {
-  maintenance_mode: boolean;
-  allow_registration: boolean;
-  global_max_leverage: number;
-}
-
-export interface AdminSystemStats {
-  total_users: number;
-  admin_users: number;
-  total_trades: number;
-  total_platform_volume: number;
-  total_equity: number;
-  active_positions: number;
-  engine_uptime_seconds: number;
-}
-
-export interface AdminUserItem {
-  id: number;
-  email: string;
-  name: string;
-  is_admin: boolean;
-  created_at: string;
-  status: string;
-}
-
+// ── Market Data Types};
 
 // ── Market Data Types ────────────────────────────────────────────────
 
@@ -340,30 +166,6 @@ export interface OHLCVResponse {
   interval: string;
   candles: OHLCVCandle[];
   count: number;
-}
-
-export interface FibLevel {
-  label: string;
-  ratio: number;
-  price: number;
-  type: 'retracement' | 'extension';
-}
-
-export interface FibonacciResponse {
-  status: string;
-  symbol: string;
-  period: string;
-  data_points: number;
-  current_price: number;
-  swing_high: number;
-  swing_low: number;
-  swing_high_date: string | null;
-  swing_low_date: string | null;
-  trend_direction: string;
-  trend_confidence: number;
-  is_uptrend: boolean;
-  in_golden_zone: boolean;
-  levels: FibLevel[];
 }
 
 // ── Pending Order Types & API ────────────────────────────────────────
@@ -408,4 +210,81 @@ export const approveOrder = (idempotencyKey: string) =>
 export const rejectOrder = (idempotencyKey: string) =>
   request<ApproveRejectResult>(`/api/pending-orders/${idempotencyKey}/reject`, {
     method: 'POST',
+  });
+
+
+// ── Autopilot & AI decisions ─────────────────────────────────────────
+
+export interface AutopilotTicker {
+  ticker: string;
+  last_run_at: string | null;
+  last_status: string | null;
+  next_due_at: string;
+  market_open: boolean;
+}
+
+export interface AutopilotStatus {
+  enabled: boolean;
+  state: 'running' | 'paused' | 'stopped';
+  stopped_reason: string | null;
+  stopped_at: string | null;
+  running_ticker: string | null;
+  last_tick_at: string | null;
+  last_error: string | null;
+  interval_minutes: number;
+  watchlist: string[];
+  tickers: AutopilotTicker[];
+  market: string;
+  broker: string;
+  mode: string;
+  require_confirmation: boolean;
+  auto_execute: boolean;
+  goals: { target_profit_pct: number | null; max_loss_pct: number | null; end_at: string | null };
+  progress: {
+    started_at: string | null;
+    start_equity: number | null;
+    equity: number;
+    change_pct: number | null;
+    seconds_left: number | null;
+  };
+}
+
+export interface AutopilotGoals {
+  target_profit_pct?: number | null;
+  max_loss_pct?: number | null;
+  end_at?: string | null;
+}
+
+export interface AIDecision {
+  task_id: string;
+  ticker: string;
+  status: string;
+  error: string | null;
+  created_at: string | null;
+  decision: {
+    action: string;
+    confidence_score?: number | null;
+    reasoning?: string | null;
+    key_factors?: string[] | null;
+    stop_loss_pct?: number | null;
+    take_profit_pct?: number | null;
+  } | null;
+  order_result: { side?: string; filled_quantity?: number; filled_price?: number; status?: string } | null;
+}
+
+export const getAutopilot = () => request<AutopilotStatus>('/api/autopilot');
+
+export const startAutopilot = (goals: AutopilotGoals) =>
+  request<AutopilotStatus>('/api/autopilot/start', { method: 'POST', body: JSON.stringify(goals) });
+
+export const pauseAutopilot = () => request<AutopilotStatus>('/api/autopilot/pause', { method: 'POST' });
+
+export const resumeAutopilot = () => request<AutopilotStatus>('/api/autopilot/resume', { method: 'POST' });
+
+export const getDecisions = (limit = 20) => request<AIDecision[]>(`/api/decisions?limit=${limit}`);
+
+export const analyzeNow = (ticker: string) =>
+  request<{ task_id: string }>('/api/analyze', {
+    method: 'POST',
+    body: JSON.stringify({ ticker, auto_execute: true }),
   });

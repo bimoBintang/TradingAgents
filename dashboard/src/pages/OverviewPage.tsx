@@ -1,25 +1,21 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChartPanel } from '../components/dashboard/ChartPanel';
-import { TradingViewPanel } from '../components/dashboard/TradingViewPanel';
 import type { ChartPanelHandle } from '../components/dashboard/ChartPanel';
-import { MarketSelector } from '../components/dashboard/MarketSelector';
 import { Card, CardContent } from '../components/ui/Card';
 import { Alert, AlertDescription } from '../components/ui/Alert';
 import { TradeActivityPanel } from '../components/dashboard/TradeActivityPanel';
-import { ProfitCalendar } from '../components/dashboard/ProfitCalendar';
 import { OpenPositionsPanel } from '../components/dashboard/OpenPositionsPanel';
-import { AgentInsights } from '../components/dashboard/AgentInsights';
-import PredictionPanel from '../components/dashboard/PredictionPanel';
+import { AutopilotCard } from '../components/dashboard/AutopilotCard';
+import { AIDecisionsPanel } from '../components/dashboard/AIDecisionsPanel';
 import { usePortfolio, useConfig } from '../hooks/useApi';
 import { usePortfolioWS, useChartControlWS } from '../hooks/useWebSocket';
 import { Wallet, TrendingUp, TrendingDown, Target, ShieldAlert, Activity, DollarSign, Wifi, WifiOff } from 'lucide-react';
 
-interface OverviewPageProps {
-  activeTicker: string;
-  setActiveTicker: (ticker: string) => void;
-}
-
-export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setActiveTicker }) => {
+export const OverviewPage: React.FC = () => {
+  // The chart follows the autonomous bot: first watchlist entry, unless the AI
+  // switches it (set_view over /ws/chart-control).
+  const [activeTicker, setActiveTicker] = useState('BTC-USD');
+  const tickerSetByAI = useRef(false);
   // WebSocket for real-time portfolio updates
   const { data: wsPortfolio, status: wsStatus } = usePortfolioWS();
 
@@ -29,12 +25,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setAct
   // calls setActiveTicker directly.
   const chartPanelRef = useRef<ChartPanelHandle>(null);
   const { sendState: sendChartState } = useChartControlWS({
-    onSetView: (ticker, timeframe, indicator) => {
-      if (ticker) setActiveTicker(ticker);
+    onSetView: (ticker, timeframe) => {
+      if (ticker) { tickerSetByAI.current = true; setActiveTicker(ticker); }
       if (timeframe) chartPanelRef.current?.setTimeframe(timeframe);
-      if (indicator) chartPanelRef.current?.setActiveIndicator(indicator);
     },
-    onAnnotatePatterns: () => chartPanelRef.current?.triggerPatternDetection(),
     onHighlightPriceLevel: (_ticker, price, label, color) =>
       chartPanelRef.current?.highlightPriceLevel(price, label, color),
     onClearAiHighlights: () => chartPanelRef.current?.clearAiHighlights(),
@@ -53,6 +47,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setAct
   // instead of the yfinance REST poll. null for paper trading, stocks,
   // or no broker connected, in which case ChartPanel is unaffected.
   const { data: configData } = useConfig();
+  useEffect(() => {
+    const first = (configData?.config as any)?.scheduler?.watchlist?.[0];
+    if (first && !tickerSetByAI.current) setActiveTicker(first);
+  }, [configData]);
   const execConfig = (configData?.config as any)?.execution;
   const liveExchange: string | null =
     execConfig?.broker === 'ccxt' && execConfig?.exchange ? execConfig.exchange : null;
@@ -187,44 +185,23 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ activeTicker, setAct
             </Alert>
           )}
 
+          <AutopilotCard />
+
           {/* NEW FULL WIDTH CHART PANEL */}
           <ChartPanel ref={chartPanelRef} ticker={activeTicker} onStateChange={handleChartStateChange} liveExchange={liveExchange} />
 
-          {/* TRADINGVIEW TELEMETRY & VISION PANEL */}
-          <TradingViewPanel activeTicker={activeTicker} className="mt-4" />
         </div>
       </div>
 
       <div className="grid grid-cols-12 gap-4 mt-6">
-        <MarketSelector 
-          activeTicker={activeTicker} 
-          onSelectTicker={setActiveTicker}
-          className="col-span-12 lg:col-span-3 h-[400px]"
+        <OpenPositionsPanel
+          positions={portfolio?.open_positions ?? []}
+          className="col-span-12 lg:col-span-5 h-[400px]"
         />
-
-        {/* OPEN POSITIONS PANEL */}
-        <OpenPositionsPanel 
-          positions={portfolio?.open_positions ?? []} 
-          className="col-span-12 lg:col-span-4 h-[400px]" 
-        />
-
-        {/* LIVE AI SIGNALS / BOT ALERTS PANEL */}
-        <AgentInsights ticker={activeTicker} className="col-span-12 lg:col-span-5 h-[400px]" />
+        <AIDecisionsPanel className="col-span-12 lg:col-span-7 h-[400px]" />
       </div>
-      
-      {/* MID ROW: EVENT TAPE (FULL WIDTH) */}
-      <div className="grid grid-cols-12 gap-4 mt-4">
+      <div className="grid grid-cols-12 gap-4 mt-4 pb-8">
         <TradeActivityPanel ticker={activeTicker} className="col-span-12 h-[300px]" />
-      </div>
-
-      {/* PROFIT CALENDAR (FULL WIDTH) */}
-      <div className="grid grid-cols-12 gap-4 mt-4">
-        <ProfitCalendar className="col-span-12" />
-      </div>
-
-      {/* BOTTOM ROW: PREDICTION MARKETS FULL-WIDTH */}
-      <div className="mt-4 pb-8 w-full">
-        <PredictionPanel ticker={activeTicker} />
       </div>
     </>
   );
